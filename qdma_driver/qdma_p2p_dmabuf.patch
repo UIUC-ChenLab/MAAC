@@ -1,0 +1,4051 @@
+diff --git a/QDMA/linux-kernel/apps/dma-ctl/cmd_parse.c b/QDMA/linux-kernel/apps/dma-ctl/cmd_parse.c
+index d427112..69e6e14 100755
+--- a/QDMA/linux-kernel/apps/dma-ctl/cmd_parse.c
++++ b/QDMA/linux-kernel/apps/dma-ctl/cmd_parse.c
+@@ -218,12 +218,12 @@ static void __attribute__((noreturn)) usage(FILE *fp)
+ 			"\t\tq add list <start_idx> <num_Qs> [mode <mm|st>] [dir <h2c|c2h|bi|cmpt>] - add multiple queues at once\n"
+ 	        "\t\tq start idx <N> [dir <h2c|c2h|bi|cmpt>] [idx_ringsz <0:15>] [idx_bufsz <0:15>] [idx_tmr <0:15>]\n"
+ 		   "                                    [idx_cntr <0:15>] [trigmode <every|usr_cnt|usr|usr_tmr|dis>] [cmptsz <0|1|2|3>] [sw_desc_sz <3>]\n"
+-	        "                                    [mm_chn <0|1>] [desc_bypass_en] [pfetch_en] [pfetch_bypass_en] [dis_cmpl_status]\n"
++	        "                                    [mm_chn <0|1>] [mm_host_id <0..15>] [desc_bypass_en] [pfetch_en] [pfetch_bypass_en] [dis_cmpl_status]\n"
+ 	        "                                    [dis_cmpl_status_acc] [dis_cmpl_status_pend_chk] [c2h_udd_en]\n"
+ 			"                                    [cmpl_ovf_dis] [fetch_credit  <h2c|c2h|bi|none>] [dis_cmpl_status] [c2h_cmpl_intr_en] [aperture_sz <aperture size power of 2>]- start a single queue\n"
+ 	        "\t\tq start list <start_idx> <num_Qs> [dir <h2c|c2h|bi|cmpt>] [idx_bufsz <0:15>] [idx_tmr <0:15>]\n"
+ 			"                                    [idx_cntr <0:15>] [trigmode <every|usr_cnt|usr|usr_tmr|dis>] [cmptsz <0|1|2|3>] [sw_desc_sz <3>]\n"
+-	        "                                    [mm_chn <0|1>] [desc_bypass_en] [pfetch_en] [pfetch_bypass_en] [dis_cmpl_status]\n"
++	        "                                    [mm_chn <0|1>] [mm_host_id <0..15>] [desc_bypass_en] [pfetch_en] [pfetch_bypass_en] [dis_cmpl_status]\n"
+ 	        "                                    [dis_cmpl_status_acc] [dis_cmpl_status_pend_chk] [cmpl_ovf_dis]\n"
+ 			"                                    [fetch_credit <h2c|c2h|bi|none>] [dis_cmpl_status] [c2h_cmpl_intr_en] [aperture_sz <aperture size power of 2>]- start multiple queues at once\n"
+ 	        "\t\tq stop idx <N> dir [<h2c|c2h|bi|cmpt>] - stop a single queue\n"
+@@ -832,6 +832,17 @@ static int read_qparm(int argc, char *argv[], int i, struct xcmd_q_parm *qparm,
+ 			qparm->mm_channel = v1;
+ 			f_arg_set |= 1 << QPARM_MM_CHANNEL;
+ 			i++;
++		} else if (!strcmp(argv[i], "mm_host_id")) {
++			rv = next_arg_read_int(argc, argv, &i, &v1);
++			if (rv < 0)
++				return rv;
++			if (v1 > 15) {
++				warnx("mm_host_id must be in the range 0..15\n");
++				return -EINVAL;
++			}
++			qparm->mm_hostid = v1;
++			f_arg_set |= 1 << QPARM_MM_HOST_ID;
++			i++;
+ 		} else if (!strcmp(argv[i], "cmpl_ovf_dis")) {
+ 			qparm->flags |= XNL_F_CMPT_OVF_CHK_DIS;
+ 			i++;
+diff --git a/QDMA/linux-kernel/apps/dma-ctl/tests/test_mm_host_id.c b/QDMA/linux-kernel/apps/dma-ctl/tests/test_mm_host_id.c
+new file mode 100644
+index 0000000..16ce1b7
+--- /dev/null
++++ b/QDMA/linux-kernel/apps/dma-ctl/tests/test_mm_host_id.c
+@@ -0,0 +1,40 @@
++/* Parser-only regression: no device files, netlink or register accesses. */
++#include <assert.h>
++#include <stdio.h>
++#include "cmd_parse.h"
++
++int main(void)
++{
++	struct xcmd_info cmd;
++	char *args[] = {"dma-ctl", "qdma11000", "q", "start", "idx", "1",
++		"dir", "bi", "mm_chn", "1", "mm_host_id", "0"};
++	char value[16];
++	const char *bad[] = {"16", "-1", "256", "invalid"};
++	unsigned int i;
++
++	for (i = 0; i <= 15; ++i) {
++		snprintf(value, sizeof(value), "%u", i);
++		args[11] = value;
++		assert(parse_cmd(12, args, &cmd) == 0);
++		assert(cmd.req.qparm.mm_channel == 1);
++		assert(cmd.req.qparm.mm_hostid == i);
++		assert(cmd.req.qparm.sflags & (1U << QPARM_MM_HOST_ID));
++	}
++	/* The two fields are deliberately independent. */
++	args[9] = "0";
++	args[11] = "1";
++	assert(parse_cmd(12, args, &cmd) == 0);
++	assert(cmd.req.qparm.mm_channel == 0);
++	assert(cmd.req.qparm.mm_hostid == 1);
++	args[9] = "1";
++	assert(parse_cmd(10, args, &cmd) == 0);
++	assert(!(cmd.req.qparm.sflags & (1U << QPARM_MM_HOST_ID)));
++	assert(cmd.req.qparm.mm_hostid == 0);
++	assert(parse_cmd(11, args, &cmd) < 0);
++	for (i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
++		args[11] = (char *)bad[i];
++		assert(parse_cmd(12, args, &cmd) < 0);
++	}
++	puts("PASS: mm_host_id parser values, independent channel, default and errors");
++	return 0;
++}
+diff --git a/QDMA/linux-kernel/apps/dma-utils/dmactl.c b/QDMA/linux-kernel/apps/dma-utils/dmactl.c
+index 88efd22..10ce1fb 100755
+--- a/QDMA/linux-kernel/apps/dma-utils/dmactl.c
++++ b/QDMA/linux-kernel/apps/dma-utils/dmactl.c
+@@ -365,6 +365,9 @@ static void xnl_msg_add_extra_config_attrs(struct xnl_hdr *hdr,
+ 	if (xcmd->req.qparm.sflags & (1 << QPARM_MM_CHANNEL))
+ 		xnl_msg_add_int_attr(hdr,  XNL_ATTR_MM_CHANNEL,
+ 		                     xcmd->req.qparm.mm_channel);
++	if (xcmd->req.qparm.sflags & (1 << QPARM_MM_HOST_ID))
++		xnl_msg_add_int_attr(hdr,  XNL_ATTR_MM_HOST_ID,
++		                     xcmd->req.qparm.mm_hostid);
+ 	if (xcmd->req.qparm.sflags & (1 << QPARM_CMPT_TRIG_MODE))
+ 		xnl_msg_add_int_attr(hdr,  XNL_ATTR_CMPT_TRIG_MODE,
+ 		                     xcmd->req.qparm.cmpt_trig_mode);
+diff --git a/QDMA/linux-kernel/apps/dma-utils/dmautils.h b/QDMA/linux-kernel/apps/dma-utils/dmautils.h
+index de661fd..b57e6de 100755
+--- a/QDMA/linux-kernel/apps/dma-utils/dmautils.h
++++ b/QDMA/linux-kernel/apps/dma-utils/dmautils.h
+@@ -100,6 +100,8 @@ enum qdma_q_parm_type {
+ 	QPARM_KEYHOLE_EN,
+ 	/** @QPARM_MM_CHANNEL: q mm channel enable param */
+ 	QPARM_MM_CHANNEL,
++	/** @QPARM_MM_HOST_ID: q mm host id */
++	QPARM_MM_HOST_ID,
+ 	/** @QPARM_MAX: max q param */
+ 	QPARM_MAX,
+ };
+@@ -137,6 +139,8 @@ struct xcmd_q_parm {
+ 	unsigned char cmpt_trig_mode;
+ 	/** @mm_channel: mm channel enable */
+ 	unsigned char mm_channel;
++	/** @mm_hostid: mm host id */
++	unsigned char mm_hostid;
+ 	/** @fetch_credit: fetch credit enable */
+ 	unsigned char fetch_credit;
+ 	/** @is_qp: queue pair */
+diff --git a/QDMA/linux-kernel/apps/include/qdma_nl.h b/QDMA/linux-kernel/apps/include/qdma_nl.h
+index cb12294..a66154f 100755
+--- a/QDMA/linux-kernel/apps/include/qdma_nl.h
++++ b/QDMA/linux-kernel/apps/include/qdma_nl.h
+@@ -167,6 +167,7 @@ enum xnl_attr_t {
+ 	XNL_ATTR_QPARAM_ERR_INFO,	/**< queue param info */
+ #endif
+ 	XNL_ATTR_NUM_REGS,			/**< number of regs */
++	XNL_ATTR_MM_HOST_ID,		/**< mm host id; appended to keep earlier ids stable */
+ 	XNL_ATTR_MAX,
+ };
+ 
+@@ -270,6 +271,8 @@ static const char *xnl_attr_str[XNL_ATTR_MAX + 1] = {
+ 	"QPARAM_ERR_INFO",		/**< queue param info */
+ #endif
+ 	"ATTR_MAX",
++	/* designated: the positional names above do not line up with the enum */
++	[XNL_ATTR_MM_HOST_ID] = "MM_HOST_ID",
+ 
+ };
+ 
+diff --git a/QDMA/linux-kernel/driver/include/qdma_ioctl.h b/QDMA/linux-kernel/driver/include/qdma_ioctl.h
+new file mode 100644
+index 0000000..7e1d87a
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/include/qdma_ioctl.h
+@@ -0,0 +1,49 @@
++#ifdef __KERNEL__
++#include <linux/ioctl.h>
++#else
++#include <sys/ioctl.h>
++#endif
++
++
++#ifndef __QDMA_IOCTL_H__
++#define __QDMA_IOCTL_H__
++#include "qdma_persistent_uapi.h"
++
++#define QDMA_IOCTL_MAGIC 'J'
++#define QDMA_CDEV_IOCTL_P2P_DMA_NUM _IOWR(QDMA_IOCTL_MAGIC, 1, struct qdma_p2p_req)
++#define QDMA_P2PDMA_IOCTL_DISABLE_NUM _IO(QDMA_IOCTL_MAGIC, 2)
++#define QDMA_P2PDMA_IOCTL_ENABLE_NUM _IO(QDMA_IOCTL_MAGIC, 3)
++
++/**
++ * Metadata for QDMA P2P Request
++ */
++enum qdma_p2p_direction {
++    // Read from QDMA/FPGA to the specified dma-buf
++    QDMA_P2P_READ = 0,
++    // Write to QDMA/FPGA from the specified dma-buf
++    QDMA_P2P_WRITE = 1
++};
++struct qdma_p2p_req {
++    unsigned long long dev_addr;
++    int dmabuf_fd; // file descriptor of the exported dma-buf
++    unsigned int num_bytes;
++    enum qdma_p2p_direction direction;
++    struct {
++        unsigned int bytes_transferred;
++        unsigned long long transfer_duration_ns;
++    } response;
++};
++
++enum qdma_cdev_ioctl_cmd {
++	QDMA_CDEV_IOCTL_NO_MEMCPY = 0,
++	QDMA_CDEV_IOCTL_CMDS,
++	QDMA_CDEV_IOCTL_P2P_DMA = QDMA_CDEV_IOCTL_P2P_DMA_NUM
++};
++
++enum qdma_p2pdma_ioctl_cmd {
++	QDMA_P2PDMA_IOCTL_DISABLE = QDMA_P2PDMA_IOCTL_DISABLE_NUM,
++	QDMA_P2PDMA_IOCTL_ENABLE = QDMA_P2PDMA_IOCTL_ENABLE_NUM
++};
++
++
++#endif
+diff --git a/QDMA/linux-kernel/driver/include/qdma_ioctl_multi_kernel_threak_p2p.h b/QDMA/linux-kernel/driver/include/qdma_ioctl_multi_kernel_threak_p2p.h
+new file mode 100644
+index 0000000..a75c16c
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/include/qdma_ioctl_multi_kernel_threak_p2p.h
+@@ -0,0 +1,41 @@
++#ifdef __KERNEL__
++#include <linux/ioctl.h>
++#else
++#include <sys/ioctl.h>
++#endif
++
++
++#ifndef __QDMA_IOCTL_H__
++#define __QDMA_IOCTL_H__
++
++#define QDMA_IOCTL_MAGIC 'J'
++#define QDMA_CDEV_IOCTL_P2P_DMA_NUM _IOW(QDMA_IOCTL_MAGIC, 1, struct qdma_p2p_req)
++
++/**
++ * Metadata for QDMA P2P Request
++ */
++enum qdma_p2p_direction {
++    // Read from QDMA/FPGA to the specified dma-buf
++    QDMA_P2P_READ = 0,
++    // Write to QDMA/FPGA from the specified dma-buf
++    QDMA_P2P_WRITE = 1
++};
++struct qdma_p2p_req {
++    unsigned long long dev_addr;
++    int dmabuf_fd; // file descriptor of the exported dma-buf
++    unsigned int num_bytes;
++    enum qdma_p2p_direction direction;
++    struct {
++        unsigned int bytes_transferred;
++        unsigned long long transfer_duration_ns;
++    } response;
++};
++
++enum qdma_cdev_ioctl_cmd {
++	QDMA_CDEV_IOCTL_NO_MEMCPY = 0,
++	QDMA_CDEV_IOCTL_CMDS,
++	QDMA_CDEV_IOCTL_P2P_DMA = QDMA_CDEV_IOCTL_P2P_DMA_NUM,
++	QDMA_CDEV_IOCTL_P2P_DMA_PARALLEL
++};
++
++#endif
+diff --git a/QDMA/linux-kernel/driver/include/qdma_nl.h b/QDMA/linux-kernel/driver/include/qdma_nl.h
+index c9bb02d..8407328 100755
+--- a/QDMA/linux-kernel/driver/include/qdma_nl.h
++++ b/QDMA/linux-kernel/driver/include/qdma_nl.h
+@@ -175,6 +175,7 @@ enum xnl_attr_t {
+ 	XNL_ATTR_QPARAM_ERR_INFO,	/**< queue param info */
+ #endif
+ 	XNL_ATTR_NUM_REGS,			/**< number of regs */
++	XNL_ATTR_MM_HOST_ID,		/**< mm host id; appended to keep earlier ids stable */
+ 	XNL_ATTR_MAX,
+ };
+ 
+@@ -278,6 +279,8 @@ static const char *xnl_attr_str[XNL_ATTR_MAX + 1] = {
+ 	"QPARAM_ERR_INFO",		/**< queue param info */
+ #endif
+ 	"ATTR_MAX",
++	/* designated: the positional names above do not line up with the enum */
++	[XNL_ATTR_MM_HOST_ID] = "MM_HOST_ID",
+ 
+ };
+ 
+diff --git a/QDMA/linux-kernel/driver/include/qdma_persistent_uapi.h b/QDMA/linux-kernel/driver/include/qdma_persistent_uapi.h
+new file mode 100644
+index 0000000..379b68a
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/include/qdma_persistent_uapi.h
+@@ -0,0 +1,77 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef QDMA_PERSISTENT_UAPI_H
++#define QDMA_PERSISTENT_UAPI_H
++#include <linux/types.h>
++#include <linux/ioctl.h>
++
++#define QDMA_PERSISTENT_ABI_VERSION 1U
++#define QDMA_PERSISTENT_BUILD_ID "persistent-dmabuf-v1-20260918"
++#define QDMA_PERSISTENT_F_DYNAMIC_ATTACH (1ULL << 0)
++#define QDMA_PERSISTENT_F_VRAM_REQUIRED  (1ULL << 1)
++#define QDMA_PERSISTENT_F_RESV_FENCES    (1ULL << 2)
++#define QDMA_PERSISTENT_F_SAFE_TIMEOUT  (1ULL << 3)
++#define QDMA_PERSISTENT_F_STATS         (1ULL << 4)
++#define QDMA_PERSISTENT_FEATURES 31ULL
++/* All requests must be zero-initialized, then size and version set. */
++struct qdma_persistent_caps {
++    __u32 size;
++    __u32 version;
++    __u64 features;
++    __u64 max_transfer_bytes;
++    char build_id[64];
++    __u64 reserved[4];
++};
++struct qdma_persistent_register {
++    __u32 size;
++    __u32 version;
++    __s32 dmabuf_fd;
++    __u32 direction; /* legacy values: 0 FPGA->GPU, 1 GPU->FPGA */
++    __u64 length;
++    __u32 gpu_domain;
++    __u32 gpu_bus;
++    __u32 gpu_device;
++    __u32 gpu_function;
++    __u64 handle; /* output, scoped to this open file description */
++    __u64 registration_ns;
++    __u64 mapping_generation;
++    __u64 reserved[4];
++};
++struct qdma_persistent_transfer {
++    __u32 size;
++    __u32 version;
++    __u64 handle;
++    __u64 device_address;
++    __u64 length; /* offset is zero in ABI v1 */
++    __u64 bytes_transferred;
++    __u64 transfer_duration_ns; /* enqueue through hardware callback */
++    __u64 mapping_generation;
++    __u64 reserved[4];
++};
++struct qdma_persistent_unregister {
++    __u32 size;
++    __u32 version;
++    __u64 handle;
++    __u64 reserved[4];
++};
++struct qdma_persistent_stats {
++    __u32 size;
++    __u32 version;
++    __u64 handle; /* zero: this file's aggregate; otherwise live handle */
++    __u64 registrations;
++    __u64 unregistrations;
++    __u64 live_registrations;
++    __u64 mappings;
++    __u64 invalidations;
++    __u64 remaps;
++    __u64 active_requests;
++    __u64 completed_requests;
++    __u64 quarantined_requests;
++    __u64 mapping_generation; /* per-handle only; zero for aggregate */
++    __u64 reserved[4];
++};
++#define QDMA_CDEV_IOCTL_CAPS _IOWR('J', 4, struct qdma_persistent_caps)
++#define QDMA_CDEV_IOCTL_REGISTER _IOWR('J', 5, struct qdma_persistent_register)
++#define QDMA_CDEV_IOCTL_TRANSFER_REGISTERED _IOWR('J', 6, struct qdma_persistent_transfer)
++#define QDMA_CDEV_IOCTL_UNREGISTER _IOWR('J', 7, struct qdma_persistent_unregister)
++#define QDMA_CDEV_IOCTL_STATS _IOWR('J', 8, struct qdma_persistent_stats)
++#endif
+diff --git a/QDMA/linux-kernel/driver/libqdma/libqdma_export.c b/QDMA/linux-kernel/driver/libqdma/libqdma_export.c
+index f0524d8..61bde1f 100755
+--- a/QDMA/linux-kernel/driver/libqdma/libqdma_export.c
++++ b/QDMA/linux-kernel/driver/libqdma/libqdma_export.c
+@@ -39,6 +39,9 @@
+ #include "qdma_mbox.h"
+ #include "qdma_platform.h"
+ 
++#include <linux/ktime.h>
++#include <linux/printk.h>
++
+ #ifdef DEBUGFS
+ #include "qdma_debugfs_queue.h"
+ 
+@@ -2483,12 +2486,17 @@ ssize_t qdma_request_submit(unsigned long dev_hndl, unsigned long id,
+ 
+ 	pr_debug("%s: cb 0x%p submitted.\n", descq->conf.name, cb);
+ 
++    // u64 start = ktime_get_ns();
+ 	qdma_descq_proc_sgt_request(descq);
+ 
+ 	if (!wait)
+ 		return 0;
+ 
+ 	rv = qdma_request_wait_for_cmpl(xdev, descq, req);
++    // u64 end = ktime_get_ns();
++
++    // printk(KERN_INFO "qdma_request_submit: time: %llu ns\n", end - start);
++
+ 	if (rv < 0)
+ 		goto unmap_sgl;
+ 
+diff --git a/QDMA/linux-kernel/driver/libqdma/libqdma_export.h b/QDMA/linux-kernel/driver/libqdma/libqdma_export.h
+index baeb78e..a091694 100755
+--- a/QDMA/linux-kernel/driver/libqdma/libqdma_export.h
++++ b/QDMA/linux-kernel/driver/libqdma/libqdma_export.h
+@@ -664,6 +664,8 @@ struct qdma_queue_conf {
+ 
+ 	/**  MM Channel */
+ 	u8 mm_channel:1;
++	/**  MM host id (host profile), 0..15 */
++	u8 mm_hostid:4;
+ 
+ 	/**  user provided per-Q irq handler */
+ 	unsigned long quld;		/* set by user for per Q data */
+diff --git a/QDMA/linux-kernel/driver/libqdma/qdma_access/qdma_access_common.h b/QDMA/linux-kernel/driver/libqdma/qdma_access/qdma_access_common.h
+index 03371e7..f559c41 100755
+--- a/QDMA/linux-kernel/driver/libqdma/qdma_access/qdma_access_common.h
++++ b/QDMA/linux-kernel/driver/libqdma/qdma_access/qdma_access_common.h
+@@ -18,6 +18,8 @@
+ #ifndef __QDMA_ACCESS_COMMON_H_
+ #define __QDMA_ACCESS_COMMON_H_
+ 
++#include <linux/bitfield.h>   /* ensure kernel FIELD_GET is defined first */
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -71,6 +73,10 @@ static inline uint32_t get_trailing_zeros(uint64_t value)
+ 
+ #define FIELD_SHIFT(mask)       get_trailing_zeros(mask)
+ #define FIELD_SET(mask, val)    ((val << FIELD_SHIFT(mask)) & mask)
++
++#ifdef FIELD_GET
++# undef FIELD_GET
++#endif
+ #define FIELD_GET(mask, reg)    ((reg & mask) >> FIELD_SHIFT(mask))
+ 
+ 
+diff --git a/QDMA/linux-kernel/driver/libqdma/qdma_context.c b/QDMA/linux-kernel/driver/libqdma/qdma_context.c
+index 96b9948..400b907 100755
+--- a/QDMA/linux-kernel/driver/libqdma/qdma_context.c
++++ b/QDMA/linux-kernel/driver/libqdma/qdma_context.c
+@@ -94,7 +94,7 @@ static int make_sw_context(struct qdma_descq *descq,
+ 		if (!descq->conf.st) { /* mm h2c/c2h */
+ 			sw_ctxt->desc_sz = DESC_SZ_32B;
+ 			sw_ctxt->mm_chn = descq->channel;
+-			sw_ctxt->host_id = descq->channel;
++			sw_ctxt->host_id = descq->host_id;
+ 		} else if (descq->conf.q_type == Q_C2H) {  /* st c2h */
+ 			sw_ctxt->frcd_en = descq->conf.fetch_credit;
+ 			sw_ctxt->desc_sz = DESC_SZ_8B;
+diff --git a/QDMA/linux-kernel/driver/libqdma/qdma_descq.c b/QDMA/linux-kernel/driver/libqdma/qdma_descq.c
+index c2f19d1..ad75c8a 100755
+--- a/QDMA/linux-kernel/driver/libqdma/qdma_descq.c
++++ b/QDMA/linux-kernel/driver/libqdma/qdma_descq.c
+@@ -921,6 +921,7 @@ void qdma_descq_init(struct qdma_descq *descq, struct xlnx_dma_dev *xdev,
+ 	INIT_WORK(&descq->work, intr_work);
+ 	descq->xdev = xdev;
+ 	descq->channel = 0;
++	descq->host_id = 0;
+ 	descq->qidx_hw = qdev->qbase + idx_hw;
+ 	descq->conf.qidx = idx_sw;
+ }
+@@ -1278,8 +1279,10 @@ void qdma_descq_config(struct qdma_descq *descq, struct qdma_queue_conf *qconf,
+ 		descq->conf.fetch_credit = qconf->fetch_credit;
+ 		descq->conf.cmpl_cnt_th_idx = qconf->cmpl_cnt_th_idx;
+ 		/* Below check is applicable only for Versal family. */
+-		if (descq->xdev->version_info.ip_type == QDMA_VERSAL_HARD_IP)
++		if (descq->xdev->version_info.ip_type == QDMA_VERSAL_HARD_IP) {
+ 			descq->channel = qconf->mm_channel;
++			descq->host_id = qconf->mm_hostid;
++		}
+ 
+ 		descq->conf.desc_bypass = qconf->desc_bypass;
+ 		descq->conf.pfetch_bypass = qconf->pfetch_bypass;
+diff --git a/QDMA/linux-kernel/driver/libqdma/qdma_descq.h b/QDMA/linux-kernel/driver/libqdma/qdma_descq.h
+index cd9909c..0162608 100755
+--- a/QDMA/linux-kernel/driver/libqdma/qdma_descq.h
++++ b/QDMA/linux-kernel/driver/libqdma/qdma_descq.h
+@@ -64,6 +64,8 @@ struct qdma_descq {
+ 	struct xlnx_dma_dev *xdev;
+ 	/** number of channels */
+ 	u8 channel;
++	/** mm host id (host profile) */
++	u8 host_id;
+ 	/** flag to indicate error on the Q, in halted state */
+ 	u8 err:1;
+ 	/** color bit for the queue */
+diff --git a/QDMA/linux-kernel/driver/libqdma/thread.c b/QDMA/linux-kernel/driver/libqdma/thread.c
+index 5a326c7..aa24cce 100755
+--- a/QDMA/linux-kernel/driver/libqdma/thread.c
++++ b/QDMA/linux-kernel/driver/libqdma/thread.c
+@@ -38,8 +38,8 @@ int qdma_kthread_dump(struct qdma_kthread *thp, char *buf, int buflen,
+ 	len += snprintf(buf, buflen, "%s, cpu %u, work %u.\n",
+ 			thp->name, thp->cpu, thp->work_cnt);
+ 
+-	if (detail)
+-		;
++	// if (detail)
++	// ;
+ 
+ 	unlock_thread(thp);
+ 
+@@ -191,4 +191,3 @@ int qdma_kthread_stop(struct qdma_kthread *thp)
+ 
+ 	return 0;
+ }
+-
+diff --git a/QDMA/linux-kernel/driver/src/Makefile b/QDMA/linux-kernel/driver/src/Makefile
+index bb309d9..3b3d4dd 100755
+--- a/QDMA/linux-kernel/driver/src/Makefile
++++ b/QDMA/linux-kernel/driver/src/Makefile
+@@ -99,7 +99,7 @@ else
+   override symverfile =
+ endif
+ 
+-DRV_OBJS := nl.o cdev.o qdma_mod.o
++DRV_OBJS := nl.o cdev.o qdma_mod.o qdma_p2pdma.o qdma_persistent.o
+ 
+ LIBQDMA_OBJS := libqdma/qdma_mbox.o libqdma/qdma_intr.o libqdma/qdma_st_c2h.o \
+ 	libqdma/qdma_thread.o libqdma/libqdma_export.o libqdma/qdma_context.o \
+diff --git a/QDMA/linux-kernel/driver/src/cdev.c b/QDMA/linux-kernel/driver/src/cdev.c
+index b7ea455..8d68b3a 100755
+--- a/QDMA/linux-kernel/driver/src/cdev.c
++++ b/QDMA/linux-kernel/driver/src/cdev.c
+@@ -17,6 +17,7 @@
+  * the file called "COPYING".
+  */
+ 
++#include <asm-generic/errno-base.h>
+ #define pr_fmt(fmt)	KBUILD_MODNAME ":%s: " fmt, __func__
+ 
+ #include "cdev.h"
+@@ -40,9 +41,14 @@
+ #include <linux/uio.h>
+ #endif
+ 
++#include <linux/dma-mapping.h>
++#include <linux/dma-buf.h>
+ #include "qdma_mod.h"
+ #include "libqdma/xdev.h"
+ 
++#include <linux/ktime.h>
++#include <linux/printk.h>
++
+ /*
+  * @struct - xlnx_phy_dev
+  * @brief	xilinx board device data members
+@@ -71,16 +77,14 @@ struct cdev_async_io {
+ 	struct work_struct wrk_itm;
+ };
+ 
+-enum qdma_cdev_ioctl_cmd {
+-	QDMA_CDEV_IOCTL_NO_MEMCPY,
+-	QDMA_CDEV_IOCTL_CMDS
+-};
+-
+ static struct class *qdma_class;
+ static struct kmem_cache *cdev_cache;
+ 
+ static ssize_t cdev_gen_read_write(struct file *file, char __user *buf,
+ 		size_t count, loff_t *pos, bool write);
++static long handle_p2p_dma(struct qdma_cdev *xcdev, unsigned long arg);
++static ssize_t convert_sgl(struct sg_table *sgt, struct qdma_io_cb *iocb, unsigned int requested_bytes);
++static ssize_t submit_p2p_dma_request(struct qdma_cdev *xcdev, struct qdma_p2p_req* p2p_req, struct qdma_io_cb *iocb, u64* duration_ns);
+ static void unmap_user_buf(struct qdma_io_cb *iocb, bool write);
+ static inline void iocb_release(struct qdma_io_cb *iocb);
+ 
+@@ -167,29 +171,53 @@ static int qdma_req_completed(struct qdma_request *req,
+  */
+ static int cdev_gen_open(struct inode *inode, struct file *file)
+ {
+-	struct qdma_cdev *xcdev = container_of(inode->i_cdev, struct qdma_cdev,
+-						cdev);
+-	file->private_data = xcdev;
+-
+-	if (xcdev->fp_open_extra)
+-		return xcdev->fp_open_extra(xcdev);
+-
+-	return 0;
++    struct qdma_cdev *xcdev = container_of(inode->i_cdev, struct qdma_cdev, cdev);
++    struct qdma_file_ctx *ctx;
++    int rv = 0;
++    mutex_lock(&qdma_cdev_lifecycle_mutex);
++    if (xcdev->deleting) {
++        rv = -ENODEV;
++        goto out;
++    }
++    ctx = qdma_persistent_open(xcdev);
++    if (IS_ERR(ctx)) {
++        rv = PTR_ERR(ctx);
++        goto out;
++    }
++    file->private_data = ctx;
++    if (xcdev->fp_open_extra)
++        rv = xcdev->fp_open_extra(xcdev);
++    if (rv < 0) {
++        pr_err("Extra open callback failed: %d\n", rv);
++        file->private_data = NULL;
++        qdma_persistent_close(ctx);
++    } else {
++        rv = 0;
++    }
++out:
++    mutex_unlock(&qdma_cdev_lifecycle_mutex);
++    return rv;
+ }
+ 
+ static int cdev_gen_close(struct inode *inode, struct file *file)
+ {
+-	struct qdma_cdev *xcdev = (struct qdma_cdev *)file->private_data;
+-
+-	if (xcdev && xcdev->fp_close_extra)
+-		return xcdev->fp_close_extra(xcdev);
+-
+-	return 0;
++    struct qdma_file_ctx *ctx = file->private_data;
++    struct qdma_cdev *xcdev = ctx->xcdev;
++    int rv = 0;
++    if (xcdev->fp_close_extra)
++        rv = xcdev->fp_close_extra(xcdev);
++    if (rv < 0)
++        pr_warn("Extra close callback failed: %d\n", rv);
++    else
++        rv = 0;
++    file->private_data = NULL;
++    qdma_persistent_close(ctx);
++    return rv;
+ }
+ 
+ static loff_t cdev_gen_llseek(struct file *file, loff_t off, int whence)
+ {
+-	struct qdma_cdev *xcdev = (struct qdma_cdev *)file->private_data;
++	struct qdma_cdev *xcdev = ((struct qdma_file_ctx *)file->private_data)->xcdev;
+ 
+ 	loff_t newpos = 0;
+ 
+@@ -218,12 +246,20 @@ static loff_t cdev_gen_llseek(struct file *file, loff_t off, int whence)
+ static long cdev_gen_ioctl(struct file *file, unsigned int cmd,
+ 			unsigned long arg)
+ {
+-	struct qdma_cdev *xcdev = (struct qdma_cdev *)file->private_data;
++	struct qdma_cdev *xcdev = ((struct qdma_file_ctx *)file->private_data)->xcdev;
+ 
+ 	switch (cmd) {
+ 	case QDMA_CDEV_IOCTL_NO_MEMCPY:
+ 		get_user(xcdev->no_memcpy, (unsigned char *)arg);
+ 		return 0;
++	case QDMA_CDEV_IOCTL_P2P_DMA:
++	    return handle_p2p_dma(xcdev, arg);
++    case QDMA_CDEV_IOCTL_CAPS:
++    case QDMA_CDEV_IOCTL_REGISTER:
++    case QDMA_CDEV_IOCTL_TRANSFER_REGISTERED:
++    case QDMA_CDEV_IOCTL_UNREGISTER:
++    case QDMA_CDEV_IOCTL_STATS:
++        return qdma_persistent_ioctl(file->private_data, cmd, arg);
+ 	default:
+ 		break;
+ 	}
+@@ -246,6 +282,123 @@ static inline void iocb_release(struct qdma_io_cb *iocb)
+ 	iocb->buf = NULL;
+ }
+ 
++static long handle_p2p_dma(struct qdma_cdev *xcdev, unsigned long arg)
++{
++    struct qdma_p2p_req p2p_req;
++    struct qdma_io_cb iocb = {0};
++    struct dma_buf *dmabuf;
++    struct dma_buf_attachment *attachment;
++    struct sg_table *sgt;
++    u64 duration = 0;
++    ssize_t bytes;
++    long rv;
++    if (copy_from_user(&p2p_req, (void __user *)arg, sizeof(p2p_req)))
++        return -EFAULT;
++    if ((p2p_req.direction != QDMA_P2P_READ &&
++         p2p_req.direction != QDMA_P2P_WRITE) || !p2p_req.num_bytes ||
++        p2p_req.dev_addr > U64_MAX - p2p_req.num_bytes)
++        return -EINVAL;
++    if (!(xcdev->dir_init & (1 << (p2p_req.direction == QDMA_P2P_WRITE ?
++                                  Q_H2C : Q_C2H))))
++        return -EINVAL;
++    dmabuf = dma_buf_get(p2p_req.dmabuf_fd);
++    if (IS_ERR(dmabuf))
++        return PTR_ERR(dmabuf);
++    if (p2p_req.num_bytes > dmabuf->size) {
++        rv = -EINVAL;
++        goto put;
++    }
++    attachment = dma_buf_attach(dmabuf, &xcdev->xcb->xpdev->pdev->dev);
++    if (IS_ERR(attachment)) {
++        rv = PTR_ERR(attachment);
++        goto put;
++    }
++    sgt = dma_buf_map_attachment(attachment, DMA_BIDIRECTIONAL);
++    if (IS_ERR(sgt)) {
++        rv = PTR_ERR(sgt);
++        goto detach;
++    }
++    rv = convert_sgl(sgt, &iocb, p2p_req.num_bytes);
++    if (rv)
++        goto unmap;
++    bytes = submit_p2p_dma_request(xcdev, &p2p_req, &iocb, &duration);
++    if (bytes < 0) {
++        rv = bytes;
++        goto release_iocb;
++    }
++    p2p_req.response.bytes_transferred = bytes;
++    p2p_req.response.transfer_duration_ns = duration;
++    rv = copy_to_user((void __user *)arg, &p2p_req, sizeof(p2p_req)) ? -EFAULT : 0;
++release_iocb:
++    iocb_release(&iocb);
++unmap:
++    dma_buf_unmap_attachment(attachment, sgt, DMA_BIDIRECTIONAL);
++detach:
++    dma_buf_detach(dmabuf, attachment);
++put:
++    dma_buf_put(dmabuf);
++    return rv;
++}
++
++static ssize_t convert_sgl(struct sg_table *sgt, struct qdma_io_cb *iocb,
++                            unsigned int requested_bytes)
++{
++    struct qdma_sw_sg *out;
++    struct scatterlist *sg;
++    unsigned int i, used = 0, remaining = requested_bytes;
++    out = kcalloc(sgt->nents, sizeof(*out), GFP_KERNEL);
++    if (!out)
++        return -ENOMEM;
++    for_each_sg(sgt->sgl, sg, sgt->nents, i) {
++        unsigned int bytes;
++        if (!remaining)
++            break;
++        bytes = min(sg_dma_len(sg), remaining);
++        if (!bytes)
++            continue;
++        out[used].dma_addr = sg_dma_address(sg);
++        out[used].len = bytes;
++        if (used)
++            out[used - 1].next = &out[used];
++        used++;
++        remaining -= bytes;
++    }
++    if (remaining || !used) {
++        kfree(out);
++        return -EINVAL;
++    }
++    iocb->sgl = out;
++    iocb->pages_nr = used;
++    return 0;
++}
++
++static ssize_t submit_p2p_dma_request(struct qdma_cdev *xcdev, struct qdma_p2p_req* p2p_req, struct qdma_io_cb *iocb, u64* duration_ns) {
++    struct qdma_request *dma_req = &(iocb->req);
++    dma_req->sgcnt = iocb->pages_nr;
++    dma_req->sgl = iocb->sgl;
++    dma_req->write = (p2p_req->direction == QDMA_P2P_WRITE) ? 1 : 0;
++    dma_req->dma_mapped = 1;
++    dma_req->udd_len = 0;
++    dma_req->ep_addr = (u64)(p2p_req->dev_addr);
++    dma_req->count = p2p_req->num_bytes;
++    dma_req->timeout_ms = 10 * 1000;	/* 10 seconds */
++    dma_req->fp_done = NULL;		/* blocking */
++    dma_req->h2c_eot = 1;		/* set to 1 for STM tests */
++
++    unsigned long qhndl = (p2p_req->direction == QDMA_P2P_WRITE) ? xcdev->h2c_qhndl : xcdev->c2h_qhndl;
++
++    u64 start = ktime_get_ns();
++    ssize_t rv = xcdev->fp_rw(xcdev->xcb->xpdev->dev_hndl, qhndl, dma_req);
++    u64 end = ktime_get_ns();
++
++    *duration_ns = end - start;
++    // printk(KERN_INFO "submit_p2p_dma_request: request execution time: %llu ns. Length %lu bytes\n", end - start, rv);
++
++    return rv;
++}
++
++
++
+ static void unmap_user_buf(struct qdma_io_cb *iocb, bool write)
+ {
+ 	int i;
+@@ -355,7 +508,7 @@ err_out:
+ static ssize_t cdev_gen_read_write(struct file *file, char __user *buf,
+ 		size_t count, loff_t *pos, bool write)
+ {
+-	struct qdma_cdev *xcdev = (struct qdma_cdev *)file->private_data;
++	struct qdma_cdev *xcdev = ((struct qdma_file_ctx *)file->private_data)->xcdev;
+ 	struct qdma_io_cb iocb;
+ 	struct qdma_request *req = &iocb.req;
+ 	ssize_t res = 0;
+@@ -422,7 +575,7 @@ static ssize_t cdev_aio_write(struct kiocb *iocb, const struct iovec *io,
+ 				unsigned long count, loff_t pos)
+ {
+ 	struct qdma_cdev *xcdev =
+-		(struct qdma_cdev *)iocb->ki_filp->private_data;
++		((struct qdma_file_ctx *)iocb->ki_filp->private_data)->xcdev;
+ 	struct cdev_async_io *caio;
+ 	int rv = 0;
+ 	unsigned long i;
+@@ -497,7 +650,7 @@ static ssize_t cdev_aio_read(struct kiocb *iocb, const struct iovec *io,
+ 						unsigned long count, loff_t pos)
+ {
+ 	struct qdma_cdev *xcdev =
+-		(struct qdma_cdev *)iocb->ki_filp->private_data;
++		((struct qdma_file_ctx *)iocb->ki_filp->private_data)->xcdev;
+ 	struct cdev_async_io *caio;
+ 	int rv = 0;
+ 	unsigned long i;
+@@ -607,6 +760,23 @@ static ssize_t cdev_read_iter(struct kiocb *iocb, struct iov_iter *io)
+ }
+ #endif
+ 
++#ifdef CONFIG_COMPAT
++static long cdev_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++    /* The historical native-layout ioctl has no 32-bit compatibility ABI. */
++    switch (cmd) {
++    case QDMA_CDEV_IOCTL_CAPS:
++    case QDMA_CDEV_IOCTL_REGISTER:
++    case QDMA_CDEV_IOCTL_TRANSFER_REGISTERED:
++    case QDMA_CDEV_IOCTL_UNREGISTER:
++    case QDMA_CDEV_IOCTL_STATS:
++        return qdma_persistent_ioctl(file->private_data, cmd, arg);
++    default:
++        return -ENOIOCTLCMD;
++    }
++}
++#endif
++
+ static const struct file_operations cdev_gen_fops = {
+ 	.owner = THIS_MODULE,
+ 	.open = cdev_gen_open,
+@@ -624,6 +794,9 @@ static const struct file_operations cdev_gen_fops = {
+ 	.aio_read = cdev_aio_read,
+ #endif
+ 	.unlocked_ioctl = cdev_gen_ioctl,
++#ifdef CONFIG_COMPAT
++	.compat_ioctl = cdev_compat_ioctl,
++#endif
+ 	.llseek = cdev_gen_llseek,
+ };
+ 
+@@ -631,6 +804,12 @@ static const struct file_operations cdev_gen_fops = {
+  * xcb: per pci device character device control info.
+  * xcdev: per queue character device
+  */
++static void qdma_cdev_release_device(struct device *device)
++{
++    struct qdma_cdev *xcdev = container_of(device, struct qdma_cdev, lifetime_device);
++    kfree(xcdev);
++}
++
+ void qdma_cdev_destroy(struct qdma_cdev *xcdev)
+ {
+ 
+@@ -638,6 +817,11 @@ void qdma_cdev_destroy(struct qdma_cdev *xcdev)
+ 		pr_err("xcdev is NULL.\n");
+ 		return;
+ 	}
++    /* Ordinary delete holds the lifecycle mutex. Retained contexts prevent
++     * teardown even after the last userspace fd closes. */
++    if (WARN_ON(atomic_read(&xcdev->persistent_users)))
++        return;
++    xcdev->deleting = true;
+ 	pr_debug("destroying cdev %p", xcdev);
+ 
+ 	if (xcdev->sys_device)
+@@ -645,7 +829,10 @@ void qdma_cdev_destroy(struct qdma_cdev *xcdev)
+ 
+ 	cdev_del(&xcdev->cdev);
+ 
+-	kfree(xcdev);
++    /* cdev_add holds a parent-device reference. An open callback that was
++     * already entered before deletion retains the cdev kobject and therefore
++     * this allocation until it observes deleting and returns. */
++    put_device(&xcdev->lifetime_device);
+ }
+ 
+ int qdma_cdev_create(struct qdma_cdev_cb *xcb, struct pci_dev *pdev,
+@@ -672,7 +859,9 @@ int qdma_cdev_create(struct qdma_cdev_cb *xcb, struct pci_dev *pdev,
+ 		return -ENOMEM;
+ 	}
+ 
+-	xcdev->cdev.owner = THIS_MODULE;
++    device_initialize(&xcdev->lifetime_device);
++    xcdev->lifetime_device.release = qdma_cdev_release_device;
++    xcdev->deleting = true; /* do not allow open until initialization completes */
+ 	xcdev->xcb = xcb;
+ 	priv_data = (qconf->q_type == Q_C2H) ?
+ 			&xcdev->c2h_qhndl : &xcdev->h2c_qhndl;
+@@ -694,6 +883,8 @@ int qdma_cdev_create(struct qdma_cdev_cb *xcb, struct pci_dev *pdev,
+ 	xcdev->cdevno = MKDEV(xcb->cdev_major, xcdev->minor);
+ 
+ 	cdev_init(&xcdev->cdev, &cdev_gen_fops);
++    xcdev->cdev.owner = THIS_MODULE;
++    cdev_set_parent(&xcdev->cdev, &xcdev->lifetime_device.kobj);
+ 
+ 	/* bring character device live */
+ 	rv = cdev_add(&xcdev->cdev, xcdev->cdevno, 1);
+@@ -729,6 +920,9 @@ int qdma_cdev_create(struct qdma_cdev_cb *xcb, struct pci_dev *pdev,
+ 	xcdev->fp_rw = qdma_request_submit;
+ 	xcdev->fp_aiorw = qdma_batch_request_submit;
+ 
++    mutex_lock(&qdma_cdev_lifecycle_mutex);
++    xcdev->deleting = false;
++    mutex_unlock(&qdma_cdev_lifecycle_mutex);
+ 	*xcdev_pp = xcdev;
+ 	return 0;
+ 
+@@ -736,7 +930,7 @@ del_cdev:
+ 	cdev_del(&xcdev->cdev);
+ 
+ err_out:
+-	kfree(xcdev);
++    put_device(&xcdev->lifetime_device);
+ 	return rv;
+ }
+ 
+@@ -845,6 +1039,8 @@ int qdma_cdev_init(void)
+ 					NULL);
+ 	if (!cdev_cache) {
+ 		pr_err("failed to allocate cdev_cache\n");
++        class_destroy(qdma_class);
++        qdma_class = NULL;
+ 		return -ENOMEM;
+ 	}
+ 
+diff --git a/QDMA/linux-kernel/driver/src/cdev.h b/QDMA/linux-kernel/driver/src/cdev.h
+index 4239ab0..13f53ee 100755
+--- a/QDMA/linux-kernel/driver/src/cdev.h
++++ b/QDMA/linux-kernel/driver/src/cdev.h
+@@ -29,13 +29,16 @@
+ #include <linux/spinlock_types.h>
+ 
+ #include "libqdma/libqdma_export.h"
++#include "qdma_ioctl.h"
+ #include <linux/workqueue.h>
++#include "qdma_persistent.h"
+ 
+ /** QDMA character device class name */
+ #define QDMA_CDEV_CLASS_NAME  DRV_MODULE_NAME
+ /** QDMA character device max minor number to support 4k queues */
+ #define QDMA_MINOR_MAX (4096)
+ 
++
+ /* per pci device control */
+ /**
+  * @struct - qdma_cdev_cb
+@@ -57,6 +60,9 @@ struct qdma_cdev_cb {
+  * @brief	QDMA character device book keeping parameters
+  */
+ struct qdma_cdev {
++	atomic_t persistent_users; /* open file contexts, including retained DMA */
++	bool deleting;
++	struct device lifetime_device; /* parent keeps embedded cdev alive through open races */
+ 	/** lsit of qdma character devices */
+ 	struct list_head list_head;
+ 	/** minor number */
+diff --git a/QDMA/linux-kernel/driver/src/cdev_multi_kernel_threak_p2p.c b/QDMA/linux-kernel/driver/src/cdev_multi_kernel_threak_p2p.c
+new file mode 100755
+index 0000000..fecf8b1
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/cdev_multi_kernel_threak_p2p.c
+@@ -0,0 +1,1304 @@
++/*
++ * This file is part of the Xilinx DMA IP Core driver for Linux
++ *
++ * Copyright (c) 2017-2022, Xilinx, Inc. All rights reserved.
++ * Copyright (c) 2022-2024, Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * This source code is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * The full GNU General Public License is included in this distribution in
++ * the file called "COPYING".
++ */
++
++#include <asm-generic/errno-base.h>
++#define pr_fmt(fmt)	KBUILD_MODNAME ":%s: " fmt, __func__
++
++#include "cdev.h"
++
++#include <asm/cacheflush.h>
++#include <linux/device.h>
++#include <linux/errno.h>
++#include <linux/fs.h>
++#include <linux/kernel.h>
++#include <linux/pci.h>
++#include <linux/slab.h>
++#include <linux/types.h>
++#include <linux/uaccess.h>
++#include <linux/slab.h>
++#include <linux/aio.h>
++#include <linux/sched.h>
++#include <linux/wait.h>
++#include <linux/kthread.h>
++#include <linux/version.h>
++#if KERNEL_VERSION(3, 16, 0) <= LINUX_VERSION_CODE
++#include <linux/uio.h>
++#endif
++
++#include <linux/dma-mapping.h>
++#include <linux/dma-buf.h>
++#include "qdma_mod.h"
++#include "libqdma/xdev.h"
++
++#include <linux/ktime.h>
++#include <linux/printk.h>
++#include <linux/kthread.h>
++#include <linux/completion.h>
++#include <linux/delay.h>
++
++/*
++ * @struct - xlnx_phy_dev
++ * @brief	xilinx board device data members
++ */
++struct xlnx_phy_dev {
++	struct list_head list_head;	/**< board list */
++	unsigned int major;	/**< major number per board */
++	unsigned int device_bus;	/**< PCIe device bus number per board */
++#ifdef CONFIG_PCI_DOMAINS_GENERIC
++	unsigned int device_bus_domain; /**< PCIe bus domain per board */
++#endif
++	unsigned int dma_device_index;
++};
++
++static LIST_HEAD(xlnx_phy_dev_list);
++static DEFINE_MUTEX(xlnx_phy_dev_mutex);
++
++struct cdev_async_io {
++	ssize_t res2;
++	unsigned long req_count;
++	unsigned long cmpl_count;
++	unsigned long err_cnt;
++	struct qdma_io_cb *qiocb;
++	struct qdma_request **reqv;
++	struct kiocb *iocb;
++	struct work_struct wrk_itm;
++};
++
++/* Multi-threaded P2P transfer data structures */
++struct p2p_chunk_data {
++	struct qdma_cdev *xcdev;
++	struct qdma_p2p_req *p2p_req;
++	struct qdma_io_cb iocb;
++	unsigned int chunk_offset;
++	unsigned int chunk_size;
++	u64 start_time;
++	u64 end_time;
++	ssize_t bytes_transferred;
++	int error;
++	int thread_id;
++	struct completion done;
++};
++
++struct p2p_parallel_ctx {
++	struct p2p_chunk_data chunks[2];
++	struct task_struct *threads[2];
++	int num_threads;
++	u64 total_start_time;
++	u64 total_end_time;
++	ssize_t total_bytes;
++	int total_error;
++};
++
++static struct class *qdma_class;
++static struct kmem_cache *cdev_cache;
++
++static ssize_t cdev_gen_read_write(struct file *file, char __user *buf,
++		size_t count, loff_t *pos, bool write);
++static long handle_p2p_dma(struct qdma_cdev *xcdev, unsigned long arg);
++static ssize_t convert_sgl(struct sg_table *sgt, struct qdma_io_cb *iocb, unsigned int requested_bytes);
++static ssize_t submit_p2p_dma_request(struct qdma_cdev *xcdev, struct qdma_p2p_req* p2p_req, struct qdma_io_cb *iocb, u64* duration_ns);
++static void unmap_user_buf(struct qdma_io_cb *iocb, bool write);
++static inline void iocb_release(struct qdma_io_cb *iocb);
++
++/* Multi-threaded P2P function declarations */
++static long handle_p2p_dma_parallel(struct qdma_cdev *xcdev, unsigned long arg);
++static int p2p_chunk_transfer_thread(void *data);
++static ssize_t convert_sgl_for_chunk(struct sg_table *sgt, struct qdma_io_cb *iocb, 
++                                    unsigned int total_bytes, unsigned int chunk_offset, 
++                                    unsigned int chunk_size);
++static ssize_t submit_p2p_chunk_request(struct qdma_cdev *xcdev, struct qdma_p2p_req *p2p_req, 
++                                       struct qdma_io_cb *iocb, unsigned int chunk_offset, 
++                                       u64 *duration_ns);
++
++static inline void xlnx_phy_dev_list_remove(struct xlnx_phy_dev *phy_dev)
++{
++	if (!phy_dev)
++		return;
++
++	mutex_lock(&xlnx_phy_dev_mutex);
++	list_del(&phy_dev->list_head);
++	mutex_unlock(&xlnx_phy_dev_mutex);
++}
++
++static inline void xlnx_phy_dev_list_add(struct xlnx_phy_dev *phy_dev)
++{
++	if (!phy_dev)
++		return;
++
++	mutex_lock(&xlnx_phy_dev_mutex);
++	list_add_tail(&phy_dev->list_head, &xlnx_phy_dev_list);
++	mutex_unlock(&xlnx_phy_dev_mutex);
++}
++
++static int qdma_req_completed(struct qdma_request *req,
++		       unsigned int bytes_done, int err)
++{
++	struct qdma_io_cb *qiocb = container_of(req,
++						struct qdma_io_cb,
++						req);
++	struct cdev_async_io *caio = NULL;
++	bool free_caio = false;
++	ssize_t res, res2;
++
++
++	if (qiocb) {
++		caio = (struct cdev_async_io *)qiocb->private;
++	} else {
++		pr_err("Invalid Data structure. Probable memory corruption");
++		return -EINVAL;
++	}
++
++	if (!caio) {
++		pr_err("Invalid Data structure. Probable memory corruption");
++		return -EINVAL;
++	}
++
++	unmap_user_buf(qiocb, req->write);
++	iocb_release(qiocb);
++	caio->res2 |= (err < 0) ? err : 0;
++	if (caio->res2)
++		caio->err_cnt++;
++	caio->cmpl_count++;
++	if (caio->cmpl_count == caio->req_count) {
++		res = caio->cmpl_count - caio->err_cnt;
++		res2 = caio->res2;
++#ifdef RHEL_RELEASE_VERSION
++#if RHEL_RELEASE_VERSION(9, 0) < RHEL_RELEASE_CODE
++		caio->iocb->ki_complete(caio->iocb, res);
++#elif RHEL_RELEASE_VERSION(8, 0) < RHEL_RELEASE_CODE
++		caio->iocb->ki_complete(caio->iocb, res, res2);
++#else
++		aio_complete(caio->iocb, res, res2);
++#endif
++#else
++#if KERNEL_VERSION(5, 16, 0) <= LINUX_VERSION_CODE
++		caio->iocb->ki_complete(caio->iocb, res);
++#elif KERNEL_VERSION(4, 1, 0) <= LINUX_VERSION_CODE
++		caio->iocb->ki_complete(caio->iocb, res, res2);
++#else
++		aio_complete(caio->iocb, res, res2);
++#endif
++#endif
++		kfree(caio->qiocb);
++		free_caio = true;
++	}
++	if (free_caio)
++		kmem_cache_free(cdev_cache, caio);
++
++	return 0;
++}
++
++/*
++ * character device file operations
++ */
++static int cdev_gen_open(struct inode *inode, struct file *file)
++{
++	struct qdma_cdev *xcdev = container_of(inode->i_cdev, struct qdma_cdev,
++						cdev);
++	file->private_data = xcdev;
++
++	if (xcdev->fp_open_extra)
++		return xcdev->fp_open_extra(xcdev);
++
++	return 0;
++}
++
++static int cdev_gen_close(struct inode *inode, struct file *file)
++{
++	struct qdma_cdev *xcdev = (struct qdma_cdev *)file->private_data;
++
++	if (xcdev && xcdev->fp_close_extra)
++		return xcdev->fp_close_extra(xcdev);
++
++	return 0;
++}
++
++static loff_t cdev_gen_llseek(struct file *file, loff_t off, int whence)
++{
++	struct qdma_cdev *xcdev = (struct qdma_cdev *)file->private_data;
++
++	loff_t newpos = 0;
++
++	switch (whence) {
++	case 0: /* SEEK_SET */
++		newpos = off;
++		break;
++	case 1: /* SEEK_CUR */
++		newpos = file->f_pos + off;
++		break;
++	case 2: /* SEEK_END, @TODO should work from end of address space */
++		newpos = UINT_MAX + off;
++		break;
++	default: /* can't happen */
++		return -EINVAL;
++	}
++	if (newpos < 0)
++		return -EINVAL;
++	file->f_pos = newpos;
++
++	pr_debug("%s: pos=%lld\n", xcdev->name, (signed long long)newpos);
++
++	return newpos;
++}
++
++static long cdev_gen_ioctl(struct file *file, unsigned int cmd,
++			unsigned long arg)
++{
++	struct qdma_cdev *xcdev = (struct qdma_cdev *)file->private_data;
++
++	switch (cmd) {
++	case QDMA_CDEV_IOCTL_NO_MEMCPY:
++		get_user(xcdev->no_memcpy, (unsigned char *)arg);
++		return 0;
++	case QDMA_CDEV_IOCTL_P2P_DMA:
++	    return handle_p2p_dma(xcdev, arg);
++	case QDMA_CDEV_IOCTL_P2P_DMA_PARALLEL:
++	    return handle_p2p_dma_parallel(xcdev, arg);
++	default:
++		break;
++	}
++	if (xcdev->fp_ioctl_extra)
++		return xcdev->fp_ioctl_extra(xcdev, cmd, arg);
++
++	pr_err("%s ioctl NOT supported.\n", xcdev->name);
++	return -EINVAL;
++}
++
++/*
++ * cdev r/w
++ */
++static inline void iocb_release(struct qdma_io_cb *iocb)
++{
++	if (iocb->pages)
++		iocb->pages = NULL;
++	kfree(iocb->sgl);
++	iocb->sgl = NULL;
++	iocb->buf = NULL;
++}
++
++static long handle_p2p_dma(struct qdma_cdev *xcdev, unsigned long arg) {
++    ssize_t rv;
++
++    // Get P2P parameters
++    struct qdma_p2p_req p2p_req;
++    rv = copy_from_user(&p2p_req, (void __user *)arg, sizeof(p2p_req));
++    if (rv != 0) {
++        pr_warn("Failed to get P2P DMA request from userspace.\n");
++        return -EINVAL;
++    }
++
++    // Get the physical/low-level device
++    struct device *dev = &(xcdev->xcb->xpdev->pdev->dev);
++    struct dma_buf *dmabuf = dma_buf_get(p2p_req.dmabuf_fd);
++    struct dma_buf_attachment *dma_attach = dma_buf_attach(dmabuf, dev);
++    struct sg_table *sgt = dma_buf_map_attachment(dma_attach, DMA_BIDIRECTIONAL);
++
++    // Convert to QDMA's scatter list.
++    struct qdma_io_cb iocb;
++    rv = convert_sgl(sgt, &iocb, p2p_req.num_bytes);
++    if (rv != 0) {
++        return rv;
++    }
++
++    // Actually submit the data transfer.
++    u64 duration;
++    ssize_t bytes = submit_p2p_dma_request(xcdev, &p2p_req, &iocb, &duration);
++    p2p_req.response.bytes_transferred = bytes;
++    p2p_req.response.transfer_duration_ns = duration;
++
++    if (copy_to_user((void __user *)arg, &p2p_req, sizeof(p2p_req))) {
++        return -EFAULT;
++    }
++
++    iocb_release(&iocb);
++    dma_buf_unmap_attachment(dma_attach, sgt, DMA_BIDIRECTIONAL);
++    dma_buf_detach(dmabuf, dma_attach);
++    dma_buf_put(dmabuf);
++    return 0;
++}
++
++static ssize_t convert_sgl(struct sg_table *sgt, struct qdma_io_cb* iocb, unsigned int requested_bytes) {
++    struct qdma_sw_sg *qdma_sgl = kmalloc(sgt->nents * sizeof(struct qdma_sw_sg), GFP_KERNEL);
++    if (qdma_sgl == NULL) {
++        return -ENOMEM;
++    }
++    struct scatterlist *sg;
++    int i = 0;
++    const unsigned int num_entries = sgt->nents;
++    unsigned int bytes_remaining = requested_bytes;
++    
++    for_each_sg(sgt->sgl, sg, num_entries, i) {
++      qdma_sgl[i].next = ((i + 1) == sgt->nents) ? NULL : qdma_sgl + (i + 1);
++      qdma_sgl[i].pg = sg_page(sg);
++      qdma_sgl[i].offset = sg->offset;
++      
++      // Use the minimum of DMA length and remaining requested bytes
++      unsigned int sg_len = sg_dma_len(sg);
++      if (bytes_remaining > 0) {
++          qdma_sgl[i].len = min(sg_len, bytes_remaining);
++          bytes_remaining -= qdma_sgl[i].len;
++      } else {
++          qdma_sgl[i].len = 0;  // No more bytes to transfer
++      }
++      
++      qdma_sgl[i].dma_addr = sg_dma_address(sg);
++      
++      printk(KERN_DEBUG "convert_sgl: sg[%d] dma_len=%u, used_len=%u, remaining=%u\n", 
++             i, sg_len, qdma_sgl[i].len, bytes_remaining);
++    }
++    iocb->sgl = qdma_sgl;
++    iocb->pages_nr = num_entries;
++    return 0;
++}
++
++static ssize_t submit_p2p_dma_request(struct qdma_cdev *xcdev, struct qdma_p2p_req* p2p_req, struct qdma_io_cb *iocb, u64* duration_ns) {
++    struct qdma_request *dma_req = &(iocb->req);
++    dma_req->sgcnt = iocb->pages_nr;
++    dma_req->sgl = iocb->sgl;
++    dma_req->write = (p2p_req->direction == QDMA_P2P_WRITE) ? 1 : 0;
++    dma_req->dma_mapped = 1;
++    dma_req->udd_len = 0;
++    dma_req->ep_addr = (u64)(p2p_req->dev_addr);
++    dma_req->count = p2p_req->num_bytes;
++    dma_req->timeout_ms = 10 * 1000;	/* 10 seconds */
++    dma_req->fp_done = NULL;		/* blocking */
++    dma_req->h2c_eot = 1;		/* set to 1 for STM tests */
++
++    unsigned long qhndl = (p2p_req->direction == QDMA_P2P_WRITE) ? xcdev->h2c_qhndl : xcdev->c2h_qhndl;
++
++    u64 start = ktime_get_ns();
++    ssize_t rv = xcdev->fp_rw(xcdev->xcb->xpdev->dev_hndl, qhndl, dma_req);
++    u64 end = ktime_get_ns();
++
++    *duration_ns = end - start;
++    printk(KERN_INFO "submit_p2p_dma_request: request execution time: %llu ns. Length %lu bytes\n", end - start, rv);
++
++    return rv;
++}
++
++/* Multi-threaded P2P implementation */
++static ssize_t convert_sgl_for_chunk(struct sg_table *sgt, struct qdma_io_cb *iocb, 
++                                    unsigned int total_bytes, unsigned int chunk_offset, 
++                                    unsigned int chunk_size) {
++    struct qdma_sw_sg *qdma_sgl;
++    struct scatterlist *sg;
++    int i = 0;
++    unsigned int current_offset = 0;
++    unsigned int bytes_to_copy = chunk_size;
++    int valid_entries = 0;
++    
++    /* Allocate memory for scatter-gather list */
++    qdma_sgl = kmalloc(sgt->nents * sizeof(struct qdma_sw_sg), GFP_KERNEL);
++    if (!qdma_sgl) {
++        return -ENOMEM;
++    }
++    
++    /* Find the starting point and create SGL for this chunk */
++    for_each_sg(sgt->sgl, sg, sgt->nents, i) {
++        unsigned int sg_len = sg_dma_len(sg);
++        
++        /* Check if this chunk intersects with current SG entry */
++        if (current_offset < chunk_offset + chunk_size && current_offset + sg_len > chunk_offset) {
++            unsigned int sg_start_offset = 0;
++            unsigned int sg_bytes_to_use = sg_len;
++            
++            /* Adjust start offset if chunk starts in middle of this SG entry */
++            if (chunk_offset > current_offset) {
++                sg_start_offset = chunk_offset - current_offset;
++                sg_bytes_to_use -= sg_start_offset;
++            }
++            
++            /* Adjust bytes to use if chunk ends in middle of this SG entry */
++            if (current_offset + sg_len > chunk_offset + chunk_size) {
++                sg_bytes_to_use = chunk_offset + chunk_size - max(current_offset, chunk_offset);
++            }
++            
++            /* Limit to remaining bytes needed */
++            sg_bytes_to_use = min(sg_bytes_to_use, bytes_to_copy);
++            
++            if (sg_bytes_to_use > 0) {
++                qdma_sgl[valid_entries].next = (valid_entries == sgt->nents - 1) ? NULL : &qdma_sgl[valid_entries + 1];
++                qdma_sgl[valid_entries].pg = sg_page(sg);
++                qdma_sgl[valid_entries].offset = sg->offset + sg_start_offset;
++                qdma_sgl[valid_entries].len = sg_bytes_to_use;
++                qdma_sgl[valid_entries].dma_addr = sg_dma_address(sg) + sg_start_offset;
++                
++                bytes_to_copy -= sg_bytes_to_use;
++                valid_entries++;
++                
++                if (bytes_to_copy == 0) break;
++            }
++        }
++        current_offset += sg_len;
++        
++        if (current_offset >= chunk_offset + chunk_size) break;
++    }
++    
++    /* Fix the next pointers */
++    for (i = 0; i < valid_entries - 1; i++) {
++        qdma_sgl[i].next = &qdma_sgl[i + 1];
++    }
++    if (valid_entries > 0) {
++        qdma_sgl[valid_entries - 1].next = NULL;
++    }
++    
++    iocb->sgl = qdma_sgl;
++    iocb->pages_nr = valid_entries;
++    
++    printk(KERN_DEBUG "convert_sgl_for_chunk: chunk_offset=%u, chunk_size=%u, valid_entries=%d\n", 
++           chunk_offset, chunk_size, valid_entries);
++    
++    return 0;
++}
++
++static ssize_t submit_p2p_chunk_request(struct qdma_cdev *xcdev, struct qdma_p2p_req *p2p_req, 
++                                       struct qdma_io_cb *iocb, unsigned int chunk_offset, 
++                                       u64 *duration_ns) {
++    struct qdma_request *dma_req = &(iocb->req);
++    unsigned long qhndl;
++    ssize_t rv;
++    u64 start, end;
++    
++    /* Calculate actual transfer size from SGL */
++    unsigned int actual_transfer_size = 0;
++    struct qdma_sw_sg *sg = iocb->sgl;
++    while (sg) {
++        actual_transfer_size += sg->len;
++        sg = sg->next;
++    }
++    
++    /* Setup DMA request */
++    dma_req->sgcnt = iocb->pages_nr;
++    dma_req->sgl = iocb->sgl;
++    dma_req->write = (p2p_req->direction == QDMA_P2P_WRITE) ? 1 : 0;
++    dma_req->dma_mapped = 1;
++    dma_req->udd_len = 0;
++    dma_req->ep_addr = (u64)(p2p_req->dev_addr) + chunk_offset;  /* Offset the device address */
++    dma_req->count = actual_transfer_size;
++    dma_req->timeout_ms = 10 * 1000;  /* 10 seconds */
++    dma_req->fp_done = NULL;          /* blocking */
++    dma_req->h2c_eot = 1;            /* set to 1 for STM tests */
++    
++    qhndl = (p2p_req->direction == QDMA_P2P_WRITE) ? xcdev->h2c_qhndl : xcdev->c2h_qhndl;
++    
++    start = ktime_get_ns();
++    rv = xcdev->fp_rw(xcdev->xcb->xpdev->dev_hndl, qhndl, dma_req);
++    end = ktime_get_ns();
++    
++    *duration_ns = end - start;
++    
++    printk(KERN_INFO "submit_p2p_chunk_request: chunk_offset=%u, size=%u, time=%llu ns, result=%zd\n", 
++           chunk_offset, actual_transfer_size, *duration_ns, rv);
++    
++    return rv;
++}
++
++static int p2p_chunk_transfer_thread(void *data) {
++    struct p2p_chunk_data *chunk = (struct p2p_chunk_data *)data;
++    ssize_t rv;
++    
++    printk(KERN_INFO "P2P chunk thread %d starting: offset=%u, size=%u\n", 
++           chunk->thread_id, chunk->chunk_offset, chunk->chunk_size);
++    
++    chunk->start_time = ktime_get_ns();
++    
++    /* This thread will handle the chunk transfer */
++    chunk->error = 0;
++    chunk->bytes_transferred = 0;
++    
++    /* Submit the chunk transfer - this will block until completion */
++    u64 transfer_duration;
++    rv = submit_p2p_chunk_request(chunk->xcdev, chunk->p2p_req, &chunk->iocb, 
++                                 chunk->chunk_offset, &transfer_duration);
++    
++    chunk->end_time = ktime_get_ns();
++    
++    if (rv < 0) {
++        chunk->error = rv;
++        printk(KERN_ERR "P2P chunk thread %d failed: %zd\n", chunk->thread_id, rv);
++    } else {
++        chunk->bytes_transferred = rv;
++        printk(KERN_INFO "P2P chunk thread %d completed: %zd bytes in %llu ns\n", 
++               chunk->thread_id, rv, transfer_duration);
++    }
++    
++    /* Signal completion */
++    complete(&chunk->done);
++    return 0;
++}
++
++static long handle_p2p_dma_parallel(struct qdma_cdev *xcdev, unsigned long arg) {
++    struct qdma_p2p_req p2p_req;
++    struct p2p_parallel_ctx ctx;
++    struct device *dev;
++    struct dma_buf *dmabuf;
++    struct dma_buf_attachment *dma_attach;
++    struct sg_table *sgt;
++    ssize_t rv;
++    int i;
++    unsigned int chunk_size;
++    
++    /* Initialize context */
++    memset(&ctx, 0, sizeof(ctx));
++    ctx.num_threads = 2;
++    
++    /* Get P2P parameters from user space */
++    rv = copy_from_user(&p2p_req, (void __user *)arg, sizeof(p2p_req));
++    if (rv != 0) {
++        pr_warn("Failed to get P2P DMA request from userspace.\n");
++        return -EINVAL;
++    }
++    
++    /* Check if transfer size is worth parallelizing */
++    if (p2p_req.num_bytes < 4 * 1024) {  /* 4KB threshold */
++        printk(KERN_INFO "P2P transfer size %u too small for parallel processing, using single thread\n", 
++               p2p_req.num_bytes);
++        return handle_p2p_dma(xcdev, arg);
++    }
++    
++    // printk(KERN_INFO "P2P parallel transfer starting: %u bytes with %d threads\n", 
++    //        p2p_req.num_bytes, ctx.num_threads);
++    
++    /* Get the physical/low-level device and setup DMA buf */
++    dev = &(xcdev->xcb->xpdev->pdev->dev);
++    dmabuf = dma_buf_get(p2p_req.dmabuf_fd);
++    if (IS_ERR(dmabuf)) {
++        return PTR_ERR(dmabuf);
++    }
++    
++    dma_attach = dma_buf_attach(dmabuf, dev);
++    if (IS_ERR(dma_attach)) {
++        dma_buf_put(dmabuf);
++        return PTR_ERR(dma_attach);
++    }
++    
++    sgt = dma_buf_map_attachment(dma_attach, DMA_BIDIRECTIONAL);
++    if (IS_ERR(sgt)) {
++        dma_buf_detach(dmabuf, dma_attach);
++        dma_buf_put(dmabuf);
++        return PTR_ERR(sgt);
++    }
++    
++    /* Calculate chunk size - split into 2 equal parts */
++    chunk_size = p2p_req.num_bytes / ctx.num_threads;
++    
++    ctx.total_start_time = ktime_get_ns();
++    
++    /* Initialize and start threads */
++    for (i = 0; i < ctx.num_threads; i++) {
++        struct p2p_chunk_data *chunk = &ctx.chunks[i];
++        
++        chunk->xcdev = xcdev;
++        chunk->p2p_req = &p2p_req;
++        chunk->chunk_offset = i * chunk_size;
++        /* Last chunk gets any remaining bytes */
++        chunk->chunk_size = (i == ctx.num_threads - 1) ? 
++                           (p2p_req.num_bytes - chunk->chunk_offset) : chunk_size;
++        chunk->thread_id = i;
++        chunk->error = 0;
++        chunk->bytes_transferred = 0;
++        
++        init_completion(&chunk->done);
++        
++        /* Convert SGL for this specific chunk */
++        rv = convert_sgl_for_chunk(sgt, &chunk->iocb, p2p_req.num_bytes, 
++                                  chunk->chunk_offset, chunk->chunk_size);
++        if (rv != 0) {
++            printk(KERN_ERR "Failed to convert SGL for chunk %d: %zd\n", i, rv);
++            ctx.total_error = rv;
++            goto cleanup_chunks;
++        }
++        
++        /* Create and start the thread */
++        ctx.threads[i] = kthread_run(p2p_chunk_transfer_thread, chunk, "p2p_chunk_%d", i);
++        if (IS_ERR(ctx.threads[i])) {
++            ctx.total_error = PTR_ERR(ctx.threads[i]);
++            printk(KERN_ERR "Failed to create thread %d: %ld\n", i, PTR_ERR(ctx.threads[i]));
++            goto cleanup_chunks;
++        }
++    }
++    
++    /* Wait for all threads to complete */
++    ctx.total_bytes = 0;
++    ctx.total_error = 0;
++    
++    for (i = 0; i < ctx.num_threads; i++) {
++        wait_for_completion(&ctx.chunks[i].done);
++        
++        if (ctx.chunks[i].error != 0) {
++            ctx.total_error = ctx.chunks[i].error;
++            printk(KERN_ERR "Chunk %d failed with error: %d\n", i, ctx.chunks[i].error);
++        } else {
++            ctx.total_bytes += ctx.chunks[i].bytes_transferred;
++        }
++    }
++    
++    ctx.total_end_time = ktime_get_ns();
++    
++    printk(KERN_INFO "P2P parallel transfer completed: %zd bytes in %llu ns\n", 
++           ctx.total_bytes, ctx.total_end_time - ctx.total_start_time);
++    
++cleanup_chunks:
++    /* Cleanup thread resources */
++    for (i = 0; i < ctx.num_threads; i++) {
++        if (ctx.chunks[i].iocb.sgl) {
++            kfree(ctx.chunks[i].iocb.sgl);
++        }
++    }
++    
++    /* Cleanup DMA resources */
++    dma_buf_unmap_attachment(dma_attach, sgt, DMA_BIDIRECTIONAL);
++    dma_buf_detach(dmabuf, dma_attach);
++    dma_buf_put(dmabuf);
++    
++    if (ctx.total_error == 0) {
++        /* Update response */
++        p2p_req.response.bytes_transferred = ctx.total_bytes;
++        p2p_req.response.transfer_duration_ns = ctx.total_end_time - ctx.total_start_time;
++        
++        if (copy_to_user((void __user *)arg, &p2p_req, sizeof(p2p_req))) {
++            return -EFAULT;
++        }
++        return 0;
++    }
++    
++    return ctx.total_error;
++}
++
++static void unmap_user_buf(struct qdma_io_cb *iocb, bool write)
++{
++	int i;
++
++	if (!iocb->pages || !iocb->pages_nr)
++		return;
++
++	for (i = 0; i < iocb->pages_nr; i++) {
++		if (iocb->pages[i]) {
++			if (!write)
++				set_page_dirty(iocb->pages[i]);
++			put_page(iocb->pages[i]);
++		} else
++			break;
++	}
++
++	if (i != iocb->pages_nr)
++		pr_err("sgl pages %d/%u.\n", i, iocb->pages_nr);
++
++	iocb->pages_nr = 0;
++}
++
++static int map_user_buf_to_sgl(struct qdma_io_cb *iocb, bool write)
++{
++	unsigned long len = iocb->len;
++	char *buf = iocb->buf;
++	struct qdma_sw_sg *sg;
++	unsigned int pg_off = offset_in_page(buf);
++	unsigned int pages_nr = (len + pg_off + PAGE_SIZE - 1) >> PAGE_SHIFT;
++	int i;
++	int rv;
++
++	if (len == 0)
++		pages_nr = 1;
++	if (pages_nr == 0)
++		return -EINVAL;
++
++	iocb->pages_nr = 0;
++	sg = kmalloc(pages_nr * (sizeof(struct qdma_sw_sg) +
++			sizeof(struct page *)), GFP_KERNEL);
++	if (!sg) {
++		pr_err("sgl allocation failed for %u pages", pages_nr);
++		return -ENOMEM;
++	}
++	memset(sg, 0, pages_nr * (sizeof(struct qdma_sw_sg) +
++			sizeof(struct page *)));
++	iocb->sgl = sg;
++
++	iocb->pages = (struct page **)(sg + pages_nr);
++	rv = get_user_pages_fast((unsigned long)buf, pages_nr, 1/* write */,
++				iocb->pages);
++	/* No pages were pinned */
++	if (rv < 0) {
++		pr_err("unable to pin down %u user pages, %d.\n",
++			pages_nr, rv);
++		goto err_out;
++	}
++	/* Less pages pinned than wanted */
++	if (rv != pages_nr) {
++		pr_err("unable to pin down all %u user pages, %d.\n",
++			pages_nr, rv);
++		iocb->pages_nr = rv;
++		rv = -EFAULT;
++		goto err_out;
++	}
++
++	for (i = 1; i < pages_nr; i++) {
++		if (iocb->pages[i - 1] == iocb->pages[i]) {
++			pr_err("duplicate pages, %d, %d.\n",
++				i - 1, i);
++			iocb->pages_nr = pages_nr;
++			rv = -EFAULT;
++			goto err_out;
++		}
++	}
++
++	sg = iocb->sgl;
++	for (i = 0; i < pages_nr; i++, sg++) {
++		unsigned int offset = offset_in_page(buf);
++		unsigned int nbytes = min_t(unsigned int, PAGE_SIZE - offset,
++						len);
++		struct page *pg = iocb->pages[i];
++
++		flush_dcache_page(pg);
++
++		sg->next = sg + 1;
++		sg->pg = pg;
++		sg->offset = offset;
++		sg->len = nbytes;
++		sg->dma_addr = 0UL;
++
++		buf += nbytes;
++		len -= nbytes;
++	}
++
++	iocb->sgl[pages_nr - 1].next = NULL;
++	iocb->pages_nr = pages_nr;
++	return 0;
++
++err_out:
++	unmap_user_buf(iocb, write);
++	iocb_release(iocb);
++
++	return rv;
++}
++
++static ssize_t cdev_gen_read_write(struct file *file, char __user *buf,
++		size_t count, loff_t *pos, bool write)
++{
++	struct qdma_cdev *xcdev = (struct qdma_cdev *)file->private_data;
++	struct qdma_io_cb iocb;
++	struct qdma_request *req = &iocb.req;
++	ssize_t res = 0;
++	int rv;
++	unsigned long qhndl;
++
++	if (!xcdev) {
++		pr_err("file 0x%p, xcdev NULL, 0x%p,%llu, pos %llu, W %d.\n",
++			file, buf, (u64)count, (u64)*pos, write);
++		return -EINVAL;
++	}
++
++	if (!xcdev->fp_rw) {
++		pr_err("file 0x%p, %s, NO rw, 0x%p,%llu, pos %llu, W %d.\n",
++			file, xcdev->name, buf, (u64)count, (u64)*pos, write);
++		return -EINVAL;
++	}
++
++	qhndl = write ? xcdev->h2c_qhndl : xcdev->c2h_qhndl;
++
++	pr_debug("%s, priv 0x%lx: buf 0x%p,%llu, pos %llu, W %d.\n",
++		xcdev->name, qhndl, buf, (u64)count, (u64)*pos,
++		write);
++
++	memset(&iocb, 0, sizeof(struct qdma_io_cb));
++	iocb.buf = buf;
++	iocb.len = count;
++	rv = map_user_buf_to_sgl(&iocb, write);
++	if (rv < 0)
++		return rv;
++
++	req->sgcnt = iocb.pages_nr;
++	req->sgl = iocb.sgl;
++	req->write = write ? 1 : 0;
++	req->dma_mapped = 0;
++	req->udd_len = 0;
++	req->ep_addr = (u64)*pos;
++	req->count = count;
++	req->timeout_ms = 10 * 1000;	/* 10 seconds */
++	req->fp_done = NULL;		/* blocking */
++	req->h2c_eot = 1;		/* set to 1 for STM tests */
++
++	res = xcdev->fp_rw(xcdev->xcb->xpdev->dev_hndl, qhndl, req);
++
++	unmap_user_buf(&iocb, write);
++	iocb_release(&iocb);
++
++	return res;
++}
++
++static ssize_t cdev_gen_write(struct file *file, const char __user *buf,
++				size_t count, loff_t *pos)
++{
++	return cdev_gen_read_write(file, (char *)buf, count, pos, 1);
++}
++
++static ssize_t cdev_gen_read(struct file *file, char __user *buf,
++				size_t count, loff_t *pos)
++{
++	return cdev_gen_read_write(file, (char *)buf, count, pos, 0);
++}
++
++static ssize_t cdev_aio_write(struct kiocb *iocb, const struct iovec *io,
++				unsigned long count, loff_t pos)
++{
++	struct qdma_cdev *xcdev =
++		(struct qdma_cdev *)iocb->ki_filp->private_data;
++	struct cdev_async_io *caio;
++	int rv = 0;
++	unsigned long i;
++	unsigned long qhndl;
++
++	if (!xcdev) {
++		pr_err("file 0x%p, xcdev NULL, %llu, pos %llu, W %d.\n",
++				iocb->ki_filp, (u64)count, (u64)pos, 1);
++		return -EINVAL;
++	}
++
++	if (!xcdev->fp_rw) {
++		pr_err("No Read write handler assigned\n");
++		return -EINVAL;
++	}
++
++	caio = kmem_cache_alloc(cdev_cache, GFP_KERNEL);
++	if (!caio) {
++		pr_err("Failed to allocate caio");
++		return -ENOMEM;
++	}
++	memset(caio, 0, sizeof(struct cdev_async_io));
++	caio->qiocb = kzalloc(count * (sizeof(struct qdma_io_cb) +
++			sizeof(struct qdma_request *)), GFP_KERNEL);
++	if (!caio->qiocb) {
++		pr_err("failed to allocate qiocb");
++		return -ENOMEM;
++	}
++
++	caio->reqv = (struct qdma_request **)(caio->qiocb + count);
++	for (i = 0; i < count; i++) {
++		caio->qiocb[i].private = caio;
++		caio->reqv[i] = &(caio->qiocb[i].req);
++		caio->qiocb[i].buf = io[i].iov_base;
++		caio->qiocb[i].len = io[i].iov_len;
++		rv = map_user_buf_to_sgl(&(caio->qiocb[i]), true);
++		if (rv < 0)
++			break;
++
++		caio->reqv[i]->write = 1;
++		caio->reqv[i]->sgcnt = caio->qiocb[i].pages_nr;
++		caio->reqv[i]->sgl = caio->qiocb[i].sgl;
++		caio->reqv[i]->dma_mapped = false;
++		caio->reqv[i]->udd_len = 0;
++		caio->reqv[i]->ep_addr = (u64)pos;
++		pos += io[i].iov_len;
++		caio->reqv[i]->no_memcpy = xcdev->no_memcpy ? 1 : 0;
++		caio->reqv[i]->count = io->iov_len;
++		caio->reqv[i]->timeout_ms = 10 * 1000;	/* 10 seconds */
++		caio->reqv[i]->fp_done = qdma_req_completed;
++
++	}
++	if (i > 0) {
++		iocb->private = caio;
++		caio->iocb = iocb;
++		caio->req_count = i;
++		qhndl = xcdev->h2c_qhndl;
++		rv = xcdev->fp_aiorw(xcdev->xcb->xpdev->dev_hndl, qhndl,
++				     caio->req_count, caio->reqv);
++		if (rv >= 0)
++			rv = -EIOCBQUEUED;
++	} else {
++		pr_err("failed with %d for %lu reqs", rv, caio->req_count);
++		kfree(caio->qiocb);
++		kmem_cache_free(cdev_cache, caio);
++	}
++
++	return rv;
++}
++
++static ssize_t cdev_aio_read(struct kiocb *iocb, const struct iovec *io,
++						unsigned long count, loff_t pos)
++{
++	struct qdma_cdev *xcdev =
++		(struct qdma_cdev *)iocb->ki_filp->private_data;
++	struct cdev_async_io *caio;
++	int rv = 0;
++	unsigned long i;
++	unsigned long qhndl;
++
++	if (!xcdev) {
++		pr_err("file 0x%p, xcdev NULL, %llu, pos %llu, W %d.\n",
++				iocb->ki_filp, (u64)count, (u64)pos, 1);
++		return -EINVAL;
++	}
++
++	if (!xcdev->fp_rw) {
++		pr_err("No Read write handler assigned\n");
++		return -EINVAL;
++	}
++
++	caio = kmem_cache_alloc(cdev_cache, GFP_KERNEL);
++	if (!caio) {
++		pr_err("failed to allocate qiocb");
++		return -ENOMEM;
++	}
++	memset(caio, 0, sizeof(struct cdev_async_io));
++	caio->qiocb = kzalloc(count * (sizeof(struct qdma_io_cb) +
++			sizeof(struct qdma_request *)), GFP_KERNEL);
++	if (!caio->qiocb) {
++		pr_err("failed to allocate qiocb");
++		return -ENOMEM;
++	}
++
++	caio->reqv = (struct qdma_request **)(caio->qiocb + count);
++	for (i = 0; i < count; i++) {
++		caio->qiocb[i].private = caio;
++		caio->reqv[i] = &(caio->qiocb[i].req);
++		caio->qiocb[i].buf = io[i].iov_base;
++		caio->qiocb[i].len = io[i].iov_len;
++		rv = map_user_buf_to_sgl(&(caio->qiocb[i]), false);
++		if (rv < 0)
++			break;
++
++		caio->reqv[i]->write = 0;
++		caio->reqv[i]->sgcnt = caio->qiocb[i].pages_nr;
++		caio->reqv[i]->sgl = caio->qiocb[i].sgl;
++		caio->reqv[i]->dma_mapped = false;
++		caio->reqv[i]->udd_len = 0;
++		caio->reqv[i]->ep_addr = (u64)pos;
++		pos += io[i].iov_len;
++		caio->reqv[i]->no_memcpy = xcdev->no_memcpy ? 1 : 0;
++		caio->reqv[i]->count = io->iov_len;
++		caio->reqv[i]->timeout_ms = 10 * 1000;	/* 10 seconds */
++		caio->reqv[i]->fp_done = qdma_req_completed;
++	}
++	if (i > 0) {
++		iocb->private = caio;
++		caio->iocb = iocb;
++		caio->req_count = i;
++		qhndl = xcdev->c2h_qhndl;
++		rv = xcdev->fp_aiorw(xcdev->xcb->xpdev->dev_hndl, qhndl,
++				     caio->req_count, caio->reqv);
++		if (rv >= 0)
++			rv = -EIOCBQUEUED;
++	} else {
++		pr_err("failed with %d for %lu reqs", rv, caio->req_count);
++		kfree(caio->qiocb);
++		kmem_cache_free(cdev_cache, caio);
++	}
++
++	return rv;
++}
++
++#if KERNEL_VERSION(3, 16, 0) <= LINUX_VERSION_CODE
++static ssize_t cdev_write_iter(struct kiocb *iocb, struct iov_iter *io)
++{
++#ifdef RHEL_RELEASE_VERSION
++	#if RHEL_RELEASE_VERSION(9, 4) > RHEL_RELEASE_CODE
++		return cdev_aio_write(iocb, io->iov, io->nr_segs, iocb->ki_pos);
++	#else
++		return cdev_aio_write(iocb, iter_iov(io), io->nr_segs,
++						         iocb->ki_pos);
++	#endif
++#else
++	#if KERNEL_VERSION(6, 4, 0) > LINUX_VERSION_CODE
++		return cdev_aio_write(iocb, io->iov, io->nr_segs, iocb->ki_pos);
++	#else
++		return cdev_aio_write(iocb, iter_iov(io), io->nr_segs,
++							 iocb->ki_pos);
++	#endif
++#endif
++}
++
++static ssize_t cdev_read_iter(struct kiocb *iocb, struct iov_iter *io)
++{
++#ifdef RHEL_RELEASE_VERSION
++	#if RHEL_RELEASE_VERSION(9, 4) > RHEL_RELEASE_CODE
++		return cdev_aio_read(iocb, io->iov, io->nr_segs, iocb->ki_pos);
++	#else
++		return cdev_aio_read(iocb, iter_iov(io), io->nr_segs,
++							iocb->ki_pos);
++	#endif
++#else
++	#if KERNEL_VERSION(6, 4, 0) > LINUX_VERSION_CODE
++		return cdev_aio_read(iocb, io->iov, io->nr_segs, iocb->ki_pos);
++	#else
++		return cdev_aio_read(iocb, iter_iov(io), io->nr_segs,
++							iocb->ki_pos);
++	#endif
++#endif
++}
++#endif
++
++static const struct file_operations cdev_gen_fops = {
++	.owner = THIS_MODULE,
++	.open = cdev_gen_open,
++	.release = cdev_gen_close,
++	.write = cdev_gen_write,
++#if KERNEL_VERSION(3, 16, 0) <= LINUX_VERSION_CODE
++	.write_iter = cdev_write_iter,
++#else
++	.aio_write = cdev_aio_write,
++#endif
++	.read = cdev_gen_read,
++#if KERNEL_VERSION(3, 16, 0) <= LINUX_VERSION_CODE
++	.read_iter = cdev_read_iter,
++#else
++	.aio_read = cdev_aio_read,
++#endif
++	.unlocked_ioctl = cdev_gen_ioctl,
++	.llseek = cdev_gen_llseek,
++};
++
++/*
++ * xcb: per pci device character device control info.
++ * xcdev: per queue character device
++ */
++void qdma_cdev_destroy(struct qdma_cdev *xcdev)
++{
++
++	if (!xcdev) {
++		pr_err("xcdev is NULL.\n");
++		return;
++	}
++	pr_debug("destroying cdev %p", xcdev);
++
++	if (xcdev->sys_device)
++		device_destroy(qdma_class, xcdev->cdevno);
++
++	cdev_del(&xcdev->cdev);
++
++	kfree(xcdev);
++}
++
++int qdma_cdev_create(struct qdma_cdev_cb *xcb, struct pci_dev *pdev,
++			struct qdma_queue_conf *qconf, unsigned int minor,
++			unsigned long qhndl, struct qdma_cdev **xcdev_pp,
++			char *ebuf, int ebuflen)
++{
++	struct qdma_cdev *xcdev;
++	int rv;
++	unsigned long *priv_data;
++
++	xcdev = kzalloc(sizeof(struct qdma_cdev) + strlen(qconf->name) + 1,
++			GFP_KERNEL);
++	if (!xcdev) {
++		pr_err("%s failed to allocate cdev %lu.\n",
++		       qconf->name, sizeof(struct qdma_cdev));
++		if (ebuf && ebuflen) {
++			rv = snprintf(ebuf, ebuflen,
++				"%s failed to allocate cdev %lu.\n",
++				qconf->name, sizeof(struct qdma_cdev));
++			ebuf[rv] = '\0';
++
++		}
++		return -ENOMEM;
++	}
++
++	xcdev->cdev.owner = THIS_MODULE;
++	xcdev->xcb = xcb;
++	priv_data = (qconf->q_type == Q_C2H) ?
++			&xcdev->c2h_qhndl : &xcdev->h2c_qhndl;
++	*priv_data = qhndl;
++	xcdev->dir_init = (1 << qconf->q_type);
++	strcpy(xcdev->name, qconf->name);
++
++	xcdev->minor = minor;
++	if (xcdev->minor >= xcb->cdev_minor_cnt) {
++		pr_err("%s: no char dev. left.\n", qconf->name);
++		if (ebuf && ebuflen) {
++			rv = snprintf(ebuf, ebuflen, "%s cdev no cdev left.\n",
++					qconf->name);
++			ebuf[rv] = '\0';
++		}
++		rv = -ENOSPC;
++		goto err_out;
++	}
++	xcdev->cdevno = MKDEV(xcb->cdev_major, xcdev->minor);
++
++	cdev_init(&xcdev->cdev, &cdev_gen_fops);
++
++	/* bring character device live */
++	rv = cdev_add(&xcdev->cdev, xcdev->cdevno, 1);
++	if (rv < 0) {
++		pr_err("cdev_add failed %d, %s.\n", rv, xcdev->name);
++		if (ebuf && ebuflen) {
++			int l = snprintf(ebuf, ebuflen,
++					"%s cdev add failed %d.\n",
++					qconf->name, rv);
++			ebuf[l] = '\0';
++		}
++		goto err_out;
++	}
++
++	/* create device on our class */
++	if (qdma_class) {
++		xcdev->sys_device = device_create(qdma_class, &(pdev->dev),
++				xcdev->cdevno, NULL, "%s", xcdev->name);
++		if (IS_ERR(xcdev->sys_device)) {
++			rv = PTR_ERR(xcdev->sys_device);
++			pr_err("%s device_create failed %d.\n",
++				xcdev->name, rv);
++			if (ebuf && ebuflen) {
++				int l = snprintf(ebuf, ebuflen,
++						"%s device_create failed %d.\n",
++						qconf->name, rv);
++				ebuf[l] = '\0';
++			}
++			goto del_cdev;
++		}
++	}
++
++	xcdev->fp_rw = qdma_request_submit;
++	xcdev->fp_aiorw = qdma_batch_request_submit;
++
++	*xcdev_pp = xcdev;
++	return 0;
++
++del_cdev:
++	cdev_del(&xcdev->cdev);
++
++err_out:
++	kfree(xcdev);
++	return rv;
++}
++
++/*
++ * per device initialization & cleanup
++ */
++void qdma_cdev_device_cleanup(struct qdma_cdev_cb *xcb)
++{
++	if (!xcb->cdev_major)
++		return;
++
++	xcb->cdev_major = 0;
++}
++
++int qdma_cdev_device_init(struct qdma_cdev_cb *xcb)
++{
++	dev_t dev;
++	int rv;
++	struct xlnx_phy_dev *phy_dev, *tmp, *new_phy_dev;
++	struct xlnx_dma_dev *xdev = NULL;
++
++	spin_lock_init(&xcb->lock);
++
++	xcb->cdev_minor_cnt = QDMA_MINOR_MAX;
++
++	if (xcb->cdev_major) {
++		pr_warn("major %d already exist.\n", xcb->cdev_major);
++		return -EINVAL;
++	}
++
++	/* Check if same bus id device is added in global list
++	 * If found then assign same major number
++	 */
++	mutex_lock(&xlnx_phy_dev_mutex);
++	xdev = (struct xlnx_dma_dev *)xcb->xpdev->dev_hndl;
++	list_for_each_entry_safe(phy_dev, tmp, &xlnx_phy_dev_list, list_head) {
++		if (phy_dev->device_bus == xcb->xpdev->pdev->bus->number &&
++#ifdef CONFIG_PCI_DOMAINS_GENERIC
++			phy_dev->device_bus_domain ==
++				xcb->xpdev->pdev->bus->domain_nr &&
++#endif
++			phy_dev->dma_device_index == xdev->dma_device_index) {
++			xcb->cdev_major = phy_dev->major;
++			mutex_unlock(&xlnx_phy_dev_mutex);
++			return 0;
++		}
++	}
++	mutex_unlock(&xlnx_phy_dev_mutex);
++
++	/* allocate a dynamically allocated char device node */
++	rv = alloc_chrdev_region(&dev, 0, xcb->cdev_minor_cnt,
++			QDMA_CDEV_CLASS_NAME);
++	if (rv) {
++		pr_err("unable to allocate cdev region %d.\n", rv);
++		return rv;
++	}
++	xcb->cdev_major = MAJOR(dev);
++
++	new_phy_dev = kzalloc(sizeof(struct xlnx_phy_dev), GFP_KERNEL);
++	if (!new_phy_dev) {
++		pr_err("unable to allocate xlnx_dev.\n");
++		return -ENOMEM;
++	}
++
++	new_phy_dev->major = xcb->cdev_major;
++	new_phy_dev->device_bus = xcb->xpdev->pdev->bus->number;
++#ifdef CONFIG_PCI_DOMAINS_GENERIC
++	new_phy_dev->device_bus_domain = xcb->xpdev->pdev->bus->domain_nr;
++#endif
++	new_phy_dev->dma_device_index = xdev->dma_device_index;
++	xlnx_phy_dev_list_add(new_phy_dev);
++
++	return 0;
++}
++
++/*
++ * driver-wide Initialization & cleanup
++ */
++
++int qdma_cdev_init(void)
++{
++#ifdef RHEL_RELEASE_VERSION
++	#if RHEL_RELEASE_VERSION(9, 4) > RHEL_RELEASE_CODE
++		qdma_class = class_create(THIS_MODULE, QDMA_CDEV_CLASS_NAME);
++	#else
++		qdma_class = class_create(QDMA_CDEV_CLASS_NAME);
++	#endif
++#else
++	#if KERNEL_VERSION(6, 4, 0) > LINUX_VERSION_CODE
++		qdma_class = class_create(THIS_MODULE, QDMA_CDEV_CLASS_NAME);
++	#else
++		qdma_class = class_create(QDMA_CDEV_CLASS_NAME);
++	#endif
++#endif
++	if (IS_ERR(qdma_class)) {
++		pr_err("%s: failed to create class 0x%lx.",
++			QDMA_CDEV_CLASS_NAME, (unsigned long)qdma_class);
++		qdma_class = NULL;
++		return -ENODEV;
++	}
++	/* using kmem_cache_create to enable sequential cleanup */
++	cdev_cache = kmem_cache_create("cdev_cache",
++					sizeof(struct cdev_async_io),
++					0,
++					SLAB_HWCACHE_ALIGN,
++					NULL);
++	if (!cdev_cache) {
++		pr_err("failed to allocate cdev_cache\n");
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++void qdma_cdev_cleanup(void)
++{
++	struct xlnx_phy_dev *phy_dev, *tmp;
++
++	list_for_each_entry_safe(phy_dev, tmp, &xlnx_phy_dev_list, list_head) {
++		unregister_chrdev_region(MKDEV(phy_dev->major, 0),
++				QDMA_MINOR_MAX);
++		xlnx_phy_dev_list_remove(phy_dev);
++		kfree(phy_dev);
++	}
++
++	kmem_cache_destroy(cdev_cache);
++	if (qdma_class)
++		class_destroy(qdma_class);
++
++}
+diff --git a/QDMA/linux-kernel/driver/src/nl.c b/QDMA/linux-kernel/driver/src/nl.c
+index 45b7d8f..517b002 100755
+--- a/QDMA/linux-kernel/driver/src/nl.c
++++ b/QDMA/linux-kernel/driver/src/nl.c
+@@ -83,6 +83,7 @@ static struct nla_policy xnl_policy[XNL_ATTR_MAX] = {
+ 	[XNL_ATTR_CMPT_TIMER_IDX] =	{ .type = NLA_U32 },
+ 	[XNL_ATTR_CMPT_CNTR_IDX] =	{ .type = NLA_U32 },
+ 	[XNL_ATTR_MM_CHANNEL] =		{ .type = NLA_U32 },
++	[XNL_ATTR_MM_HOST_ID] =		{ .type = NLA_U32 },
+ 	[XNL_ATTR_CMPT_TRIG_MODE] =	{ .type = NLA_U32 },
+ 	[XNL_ATTR_CMPT_ENTRIES_CNT] =	{ .type = NLA_U32 },
+ 	[XNL_ATTR_RANGE_START] =	{ .type = NLA_U32 },
+@@ -164,6 +165,7 @@ static struct nla_policy xnl_policy[XNL_ATTR_MAX] = {
+ 	[XNL_ATTR_CMPT_TIMER_IDX] =	{ .type = NLA_U32 },
+ 	[XNL_ATTR_CMPT_CNTR_IDX] =	{ .type = NLA_U32 },
+ 	[XNL_ATTR_MM_CHANNEL] =		{ .type = NLA_U32 },
++	[XNL_ATTR_MM_HOST_ID] =		{ .type = NLA_U32 },
+ 	[XNL_ATTR_CMPT_TRIG_MODE] =	{ .type = NLA_U32 },
+ 	[XNL_ATTR_CMPT_ENTRIES_CNT] =	{ .type = NLA_U32 },
+ 	[XNL_ATTR_RANGE_START] =	{ .type = NLA_U32 },
+@@ -921,6 +923,9 @@ static void xnl_extract_extra_config_attr(struct genl_info *info,
+ 	if (xnl_chk_attr(XNL_ATTR_MM_CHANNEL, info, qconf->qidx, NULL, 0) == 0)
+ 		qconf->mm_channel =
+ 			nla_get_u32(info->attrs[XNL_ATTR_MM_CHANNEL]);
++	if (xnl_chk_attr(XNL_ATTR_MM_HOST_ID, info, qconf->qidx, NULL, 0) == 0)
++		qconf->mm_hostid =
++			nla_get_u32(info->attrs[XNL_ATTR_MM_HOST_ID]);
+ 	if (xnl_chk_attr(XNL_ATTR_CMPT_DESC_SIZE,
+ 				info, qconf->qidx, NULL, 0) == 0)
+ 		qconf->cmpl_desc_sz =
+@@ -1734,11 +1739,22 @@ static int xnl_q_start(struct sk_buff *skb2, struct genl_info *info)
+ 		goto send_resp;
+ 	}
+ 
++	/* check the raw value: qconf.mm_hostid is a 4-bit field */
++	if (info->attrs[XNL_ATTR_MM_HOST_ID] &&
++	    nla_get_u32(info->attrs[XNL_ATTR_MM_HOST_ID]) > 15) {
++		pr_err("Invalid mm host id received");
++		rv += snprintf(buf, 40, "Invalid mm host id received");
++		goto send_resp;
++	}
++
+ 	if (!info->attrs[XNL_ATTR_C2H_BUFSZ_IDX])
+ 		is_bufsz_idx = 0;
+ 
+ 	if (!info->attrs[XNL_ATTR_MM_CHANNEL])
+ 		qconf.mm_channel = 0;
++	/* without mm_host_id, keep the host id equal to the mm channel */
++	if (!info->attrs[XNL_ATTR_MM_HOST_ID])
++		qconf.mm_hostid = qconf.mm_channel;
+ 
+ 	dir = qconf.q_type;
+ 	for (i = qidx; i < (qidx + num_q); i++) {
+@@ -1839,12 +1855,22 @@ static int xnl_q_stop(struct sk_buff *skb2, struct genl_info *info)
+ 			qconf.q_type = dir;
+ stop_q:
+ 		qconf.qidx = i;
++        mutex_lock(&qdma_cdev_lifecycle_mutex);
+ 		qdata = xnl_rcv_check_qidx(info, xpdev, &qconf, buf,
+ 					XNL_RESP_BUFLEN_MIN);
+-		if (!qdata)
+-			goto send_resp;
++        if (!qdata) {
++            mutex_unlock(&qdma_cdev_lifecycle_mutex);
++            goto send_resp;
++        }
++        if (qdata->xcdev && atomic_read(&qdata->xcdev->persistent_users)) {
++            snprintf(buf, sizeof(buf), "queue is in use by open files or retained DMA; close/drain clients first\n");
++            rv = -EBUSY;
++            mutex_unlock(&qdma_cdev_lifecycle_mutex);
++            goto send_resp;
++        }
+ 		rv = qdma_queue_stop(xpdev->dev_hndl, qdata->qhndl,
+ 				     buf, XNL_RESP_BUFLEN_MIN);
++        mutex_unlock(&qdma_cdev_lifecycle_mutex);
+ 		if (rv < 0) {
+ 			pr_err("qdma_queue_stop() failed: %d", rv);
+ 			goto send_resp;
+diff --git a/QDMA/linux-kernel/driver/src/pci_ids.h b/QDMA/linux-kernel/driver/src/pci_ids.h
+index a7bdb97..78c0740 100755
+--- a/QDMA/linux-kernel/driver/src/pci_ids.h
++++ b/QDMA/linux-kernel/driver/src/pci_ids.h
+@@ -466,6 +466,8 @@ static const struct pci_device_id pci_ids[] = {
+ 	{ PCI_DEVICE(0x10ee, 0xb158), },	/** PF 1 */
+ 	{ PCI_DEVICE(0x10ee, 0xb258), },	/** PF 2 */
+ 	{ PCI_DEVICE(0x10ee, 0xb358), },	/** PF 3 */
++	{ PCI_DEVICE(0x10ee, 0x50b4), },    /** V80  */
++	{ PCI_DEVICE(0x10ee, 0x50b5), },    /** V80  */
+ #endif
+ 
+ 	{0,}
+diff --git a/QDMA/linux-kernel/driver/src/qdma_mod.c b/QDMA/linux-kernel/driver/src/qdma_mod.c
+index 4a94f57..ec77f86 100755
+--- a/QDMA/linux-kernel/driver/src/qdma_mod.c
++++ b/QDMA/linux-kernel/driver/src/qdma_mod.c
+@@ -36,6 +36,8 @@
+ /* include early, to verify it depends only on the headers above */
+ #include "version.h"
+ 
++#include "qdma_p2pdma.h"
++
+ #define QDMA_DEFAULT_TOTAL_Q 2048
+ 
+ static char version[] =
+@@ -46,6 +48,17 @@ MODULE_DESCRIPTION(DRV_MODULE_DESC);
+ MODULE_VERSION(DRV_MODULE_VERSION);
+ MODULE_LICENSE("Dual BSD/GPL");
+ 
++#define __NS_STR(x) #x
++#define _NS_STR(x)  __NS_STR(x)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,13,0)
++  /* 6.13+ expects a string literal */
++  #define MODULE_IMPORT_NS_COMPAT(ns) MODULE_IMPORT_NS(_NS_STR(ns))
++#else
++  /* ≤6.12 expects a bare identifier */
++  #define MODULE_IMPORT_NS_COMPAT(ns) MODULE_IMPORT_NS(ns)
++#endif
++MODULE_IMPORT_NS_COMPAT(DMA_BUF);
++
+ static char mode[500] = {0};
+ module_param_string(mode, mode, sizeof(mode), 0);
+ MODULE_PARM_DESC(mode, "Load the driver in different modes, dflt is auto mode, format is \"<bus_num>:<pf_num>:<mode>\" and multiple comma separated entries can be specified");
+@@ -1087,7 +1100,7 @@ struct xlnx_qdata *xpdev_queue_get(struct xlnx_pci_dev *xpdev,
+ 	return qdata;
+ }
+ 
+-int xpdev_queue_delete(struct xlnx_pci_dev *xpdev, unsigned int qidx, u8 q_type,
++static int xpdev_queue_delete_locked(struct xlnx_pci_dev *xpdev, unsigned int qidx, u8 q_type,
+ 			char *ebuf, int ebuflen)
+ {
+ 	struct xlnx_qdata *qdata = xpdev_queue_get(xpdev, qidx, q_type, 1, ebuf,
+@@ -1100,6 +1113,11 @@ int xpdev_queue_delete(struct xlnx_pci_dev *xpdev, unsigned int qidx, u8 q_type,
+ 	if (q_type != Q_CMPT) {
+ 		if (!qdata->xcdev)
+ 			return -EINVAL;
++        if (atomic_read(&qdata->xcdev->persistent_users)) {
++            if (ebuf && ebuflen)
++                snprintf(ebuf, ebuflen, "queue is in use by open files or retained DMA; close/drain clients first\n");
++            return -EBUSY;
++        }
+ 	}
+ 
+ 	if (qdata->qhndl != QDMA_QUEUE_IDX_INVALID)
+@@ -1125,6 +1143,16 @@ exit:
+ 	return rv;
+ }
+ 
++int xpdev_queue_delete(struct xlnx_pci_dev *xpdev, unsigned int qidx, u8 q_type,
++                       char *ebuf, int ebuflen)
++{
++    int rv;
++    mutex_lock(&qdma_cdev_lifecycle_mutex);
++    rv = xpdev_queue_delete_locked(xpdev, qidx, q_type, ebuf, ebuflen);
++    mutex_unlock(&qdma_cdev_lifecycle_mutex);
++    return rv;
++}
++
+ #if KERNEL_VERSION(3, 16, 0) <= LINUX_VERSION_CODE
+ static void xpdev_queue_delete_all(struct xlnx_pci_dev *xpdev)
+ {
+@@ -1601,6 +1629,12 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
+ 	if (rv < 0)
+ 		return rv;
+ 
++	pr_info("Device BARs: %d (config), %d (user), %d (bypass).\n", conf.bar_num_config, conf.bar_num_user, conf.bar_num_bypass);
++	rv = qdma_p2pdma_probe(pdev, conf.bar_num_user);
++	if (rv != 0) {
++		goto close_device;
++	}
++
+ 	xpdev = xpdev_alloc(pdev, conf.qsets_max);
+ 	if (!xpdev) {
+ 		rv = -EINVAL;
+@@ -1677,6 +1711,8 @@ static void remove_one(struct pci_dev *pdev)
+ 	pr_info("%s pdev 0x%p, xdev 0x%p, hndl 0x%lx, qdma%05x.\n",
+ 		dev_name(&pdev->dev), pdev, xpdev, xpdev->dev_hndl, xpdev->idx);
+ 
++	qdma_p2pdma_remove(pdev);
++
+ 	if (xdev->conf.master_pf)
+ 		sysfs_remove_group(&pdev->dev.kobj,
+ 				&pci_master_device_attr_group);
+@@ -1894,30 +1930,46 @@ static struct pci_driver pci_driver = {
+ 
+ static int __init qdma_mod_init(void)
+ {
+-	int rv;
+-
+-	pr_info("%s", version);
+-
+-	rv = libqdma_init(num_threads, NULL);
+-	if (rv < 0)
+-		return rv;
+-
+-	rv = xlnx_nl_init();
+-	if (rv < 0)
+-		return rv;
+-
+-	rv = qdma_cdev_init();
+-	if (rv < 0)
+-		return rv;
+-
+-	return pci_register_driver(&pci_driver);
++    int rv;
++    pr_info("%s", version);
++    rv = qdma_persistent_init();
++    if (rv)
++        return rv;
++    rv = libqdma_init(num_threads, NULL);
++    if (rv < 0)
++        goto persistent_fail;
++    rv = xlnx_nl_init();
++    if (rv < 0)
++        goto library_fail;
++    rv = qdma_cdev_init();
++    if (rv < 0)
++        goto netlink_fail;
++    rv = qdma_p2pdma_init();
++    if (rv)
++        goto cdev_fail;
++    rv = pci_register_driver(&pci_driver);
++    if (!rv)
++        return 0;
++    qdma_p2pdma_exit();
++cdev_fail:
++    qdma_cdev_cleanup();
++netlink_fail:
++    xlnx_nl_exit();
++library_fail:
++    libqdma_exit();
++persistent_fail:
++    qdma_persistent_shutdown();
++    return rv;
+ }
+ 
+ static void __exit qdma_mod_exit(void)
+ {
++    qdma_persistent_shutdown();
+ 	/* unregister this driver from the PCI bus driver */
+ 	pci_unregister_driver(&pci_driver);
+ 
++	qdma_p2pdma_exit();
++
+ 	xlnx_nl_exit();
+ 
+ 	qdma_cdev_cleanup();
+diff --git a/QDMA/linux-kernel/driver/src/qdma_p2pdma.c b/QDMA/linux-kernel/driver/src/qdma_p2pdma.c
+new file mode 100644
+index 0000000..7595a05
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/qdma_p2pdma.c
+@@ -0,0 +1,333 @@
++#define pr_fmt(fmt)	KBUILD_MODNAME ":%s: " fmt, __func__
++
++#include <linux/device.h>
++#include <linux/types.h>
++#include <linux/cdev.h>
++#include <linux/pci.h>
++#include <linux/pci-p2pdma.h>
++#include <linux/idr.h>
++#include <linux/errno.h>
++#include "qdma_p2pdma.h"
++#include "qdma_ioctl.h"
++
++#define QDMA_P2PDMA_DRV_BASENAME "qdmap2p"
++#define QDMA_P2PDMA_MINOR_START 0
++#define QDMA_P2PDMA_NUM_MINORS 32
++#define QDMA_P2PDMA_DEFAULT_BAR 2
++static DEFINE_IDA(minors_ida);
++
++/**
++ * struct p2pdma_device - Per-device context for P2P DMA
++ * @pdev: Associated PCI device
++ * @minor: Minor device number
++ * @devt: Device number (major + minor)
++ * @cdev: Character device
++ * @chardev: Device node in sysfs
++ * @bar: BAR number used for P2P memory
++ * @bar_start: Physical start address of BAR
++ * @bar_size: Size of the BAR in bytes
++ */
++struct p2pdma_device {
++	struct pci_dev *pdev;
++	int minor;
++	dev_t devt;
++	struct cdev cdev;
++	struct device *chardev;
++	int bar;
++	resource_size_t bar_start;
++	resource_size_t bar_size;
++};
++
++static long p2pdma_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
++
++/* Character device file operations */
++static const struct file_operations p2pdma_fops = {
++	.owner		= THIS_MODULE,
++	.unlocked_ioctl	= p2pdma_ioctl,
++	.llseek		= noop_llseek,
++#ifdef CONFIG_COMPAT
++	.compat_ioctl	= p2pdma_ioctl,
++#endif
++};
++
++struct p2pdma_driver {
++    struct class *cls;
++    dev_t base_dev;
++};
++// Global driver state
++static struct p2pdma_driver *p2pdma_drv_ctx;
++
++static void p2pdma_ida_free_action(void *data) {
++    int idx = (long)data;
++    ida_free(&minors_ida, idx);
++}
++
++static void p2pdma_cdev_del_action(void *data) {
++    struct cdev *cdev = data;
++    cdev_del(cdev);
++}
++
++static void p2pdma_device_destroy_action(void *data) {
++    struct p2pdma_device *p2pdma_dev = data;
++
++	if (p2pdma_drv_ctx && p2pdma_drv_ctx->cls) {
++		device_destroy(p2pdma_drv_ctx->cls, p2pdma_dev->devt);
++	}
++}
++
++
++static long p2pdma_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
++	struct p2pdma_device *p2pdma_dev;
++	struct inode *inode;
++
++	if (!filp) {
++		pr_err("Invalid file pointer\n");
++		return -EINVAL;
++	}
++
++	inode = file_inode(filp);
++	if (!inode) {
++		pr_err("Invalid inode\n");
++		return -EINVAL;
++	}
++
++	p2pdma_dev = container_of(inode->i_cdev, struct p2pdma_device, cdev);
++	if (!p2pdma_dev || !p2pdma_dev->pdev) {
++		pr_err("Invalid device context\n");
++		return -EINVAL;
++	}
++
++	dev_dbg(&p2pdma_dev->pdev->dev, "ioctl cmd=0x%x\n", cmd);
++
++	switch (cmd) {
++	case QDMA_P2PDMA_IOCTL_DISABLE:
++		pci_p2pmem_publish(p2pdma_dev->pdev, false);
++		dev_info(&p2pdma_dev->pdev->dev, "P2P memory disabled\n");
++		return 0;
++
++	case QDMA_P2PDMA_IOCTL_ENABLE:
++		pci_p2pmem_publish(p2pdma_dev->pdev, true);
++		dev_info(&p2pdma_dev->pdev->dev, "P2P memory enabled\n");
++		return 0;
++
++	default:
++		dev_warn(&p2pdma_dev->pdev->dev, "Unknown ioctl cmd=0x%x\n", cmd);
++		return -ENOTTY;
++	}
++}
++
++
++static int qdma_p2p_create_chardev(struct pci_dev *pdev, int bar) {
++	struct p2pdma_device *p2pdma_dev = NULL;
++	int rv;
++
++	p2pdma_dev = devm_kzalloc(&pdev->dev, sizeof(*p2pdma_dev), GFP_KERNEL);
++	if (!p2pdma_dev) {
++		dev_err(&pdev->dev, "Failed to allocate device context\n");
++		return -ENOMEM;
++	}
++
++	p2pdma_dev->pdev = pdev;
++	p2pdma_dev->bar = bar;
++	p2pdma_dev->bar_start = pci_resource_start(pdev, bar);
++	p2pdma_dev->bar_size = pci_resource_len(pdev, bar);
++
++	dev_info(&pdev->dev,
++		 "BAR%d start address %pa with length %pa bytes\n",
++		 bar, &p2pdma_dev->bar_start, &p2pdma_dev->bar_size);
++
++	rv = ida_alloc_range(&minors_ida, QDMA_P2PDMA_MINOR_START, QDMA_P2PDMA_NUM_MINORS - 1, GFP_KERNEL);
++	if (rv < 0) {
++		dev_err_probe(&pdev->dev, rv, "Failed to allocate minor number");
++		return rv;
++	}
++	p2pdma_dev->minor = rv;
++	devm_add_action_or_reset(&pdev->dev, p2pdma_ida_free_action, (void *)(long)p2pdma_dev->minor);
++
++	cdev_init(&p2pdma_dev->cdev, &p2pdma_fops);
++	p2pdma_dev->cdev.owner = THIS_MODULE;
++
++	p2pdma_dev->devt = MKDEV(MAJOR(p2pdma_drv_ctx->base_dev), MINOR(p2pdma_drv_ctx->base_dev) + p2pdma_dev->minor);
++	rv = cdev_add(&p2pdma_dev->cdev, p2pdma_dev->devt, 1);
++	if (rv) {
++	dev_err_probe(&pdev->dev, rv, "Failed to add character device");
++	    goto err_ida;
++	}
++	devm_add_action_or_reset(&pdev->dev, p2pdma_cdev_del_action, &p2pdma_dev->cdev);
++
++	p2pdma_dev->chardev = device_create(p2pdma_drv_ctx->cls, &pdev->dev, p2pdma_dev->devt,
++					    p2pdma_dev, QDMA_P2PDMA_DRV_BASENAME"%d", p2pdma_dev->minor);
++	if (IS_ERR(p2pdma_dev->chardev)) {
++		rv = PTR_ERR(p2pdma_dev->chardev);
++		dev_err_probe(&pdev->dev, rv, "Failed to create character device");
++		goto err_cdev;
++	}
++	devm_add_action_or_reset(&pdev->dev, p2pdma_device_destroy_action, p2pdma_dev);
++
++	return 0;
++
++err_cdev:
++	cdev_del(&p2pdma_dev->cdev);
++err_ida:
++	ida_free(&minors_ida, p2pdma_dev->minor);
++	return rv;
++}
++
++/**
++ * qdma_p2pdma_init - Initialize the P2PDMA driver subsystem
++ *
++ * This function must be called once during driver initialization to set up
++ * the character device region and device class for P2PDMA devices.
++ *
++ * Return: 0 on success, negative error code on failure
++ */
++int qdma_p2pdma_init(void) {
++    int rv;
++
++	/* Check if already initialized */
++	if (p2pdma_drv_ctx) {
++		kfree(p2pdma_drv_ctx);
++	}
++
++	/* Allocate global driver context */
++	p2pdma_drv_ctx = kzalloc(sizeof(*p2pdma_drv_ctx), GFP_KERNEL);
++	if (!p2pdma_drv_ctx) {
++		pr_err("Failed to allocate driver context\n");
++		return -ENOMEM;
++	}
++
++	/* Allocate character device region */
++	rv = alloc_chrdev_region(&p2pdma_drv_ctx->base_dev,
++				 QDMA_P2PDMA_MINOR_START,
++				 QDMA_P2PDMA_NUM_MINORS,
++				 QDMA_P2PDMA_DRV_BASENAME);
++	if (rv < 0) {
++		pr_err("Failed to allocate character device region: %d\n", rv);
++		goto err_free_ctx;
++	}
++
++	/* Create device class */
++	p2pdma_drv_ctx->cls = class_create(QDMA_P2PDMA_DRV_BASENAME);
++	if (IS_ERR_OR_NULL(p2pdma_drv_ctx->cls)) {
++        pr_err("Failed to create device class: %ld\n", PTR_ERR(p2pdma_drv_ctx->cls));
++		rv = -EINVAL;
++		goto err_unreg_chrdev;
++	}
++
++    pr_info("P2P DMA driver initialized (major=%d)\n", MAJOR(p2pdma_drv_ctx->base_dev));
++
++    return 0;
++
++err_unreg_chrdev:
++	unregister_chrdev_region(p2pdma_drv_ctx->base_dev, QDMA_P2PDMA_NUM_MINORS);
++err_free_ctx:
++	kfree(p2pdma_drv_ctx);
++	p2pdma_drv_ctx = NULL;
++	return rv;
++}
++
++/**
++ * qdma_p2pdma_probe - Initialize P2PDMA for a PCI device
++ * @pdev: PCI device to initialize
++ * @bar: BAR number to use for P2PDMA memory
++ *
++ * Return: 0 on success, negative error code on failure
++ */
++int qdma_p2pdma_probe(struct pci_dev *pdev, int bar) {
++    unsigned long flags;
++    int rv;
++
++	if (!pdev) {
++		pr_err("Invalid PCI device\n");
++		return -EINVAL;
++	}
++
++	if (!p2pdma_drv_ctx) {
++		dev_err(&pdev->dev, "P2P DMA driver not initialized\n");
++		return -ENODEV;
++	}
++
++	/* A tandem/streaming-only design may expose no user-memory BAR.
++	 * GPU DMA-BUF import and normal QDMA operation do not require one.
++	 */
++	if (bar < 0) {
++		dev_info(&pdev->dev, "No user BAR; skipping P2PDMA provider\n");
++		return 0;
++	}
++
++	if (bar >= PCI_STD_NUM_BARS) {
++		dev_err(&pdev->dev, "Invalid BAR number: %d\n", bar);
++		return -EINVAL;
++	}
++
++	// Check if BAR is a memory resource
++	flags = pci_resource_flags(pdev, bar);
++	if (!(flags & IORESOURCE_MEM) || !pci_resource_len(pdev, bar)) {
++		dev_info(&pdev->dev, "BAR%d has no memory resource; skipping P2PDMA provider\n", bar);
++		return 0;
++	}
++
++	// Register BAR as P2PDMA provider memory. size=0 to use whole BAR.
++	dev_info(&pdev->dev, "Registering BAR%d (size %llu bytes) as P2PDMA provider memory.\n", bar, pci_resource_len(pdev, bar));
++	rv = pci_p2pdma_add_resource(pdev, bar, 0, 0);
++	if (rv) {
++		dev_err(&pdev->dev, QDMA_P2PDMA_DRV_BASENAME ": pci_p2pdma_add_resource failed: %d\n", rv);
++		return rv;
++	}
++
++	pci_p2pmem_publish(pdev, true);
++
++	// Create character device interface
++	rv = qdma_p2p_create_chardev(pdev, bar);
++	if (rv) {
++		dev_err(&pdev->dev, "Failed to create character device: %d\n", rv);
++		return rv;
++	}
++
++	dev_info(&pdev->dev, QDMA_P2PDMA_DRV_BASENAME ": P2P provider ready on %s, BAR%d %s\n",
++		 dev_name(&pdev->dev), bar, (flags & IORESOURCE_PREFETCH) ? ", prefetchable" : "");
++	return 0;
++}
++
++/**
++ * qdma_p2pdma_remove - Remove P2P DMA support for a PCI device
++ * @pdev: PCI device to remove
++ */
++void qdma_p2pdma_remove(struct pci_dev *pdev)
++{
++	if (!pdev) {
++		pr_warn("Invalid PCI device for removal\n");
++		return;
++	}
++	pci_p2pmem_publish(pdev, false);
++
++	dev_info(&pdev->dev, "P2P DMA device removed\n");
++}
++
++/**
++ * qdma_p2pdma_exit - Cleanup the P2PDMA driver subsystem
++ */
++void qdma_p2pdma_exit(void)
++{
++	if (!p2pdma_drv_ctx) {
++		pr_info("P2P DMA driver not initialized, nothing to cleanup\n");
++		return;
++	}
++
++	// Cleanup device class
++	if (p2pdma_drv_ctx->cls && !IS_ERR(p2pdma_drv_ctx->cls)) {
++	class_destroy(p2pdma_drv_ctx->cls);
++	}
++
++	// Cleanup character device region
++	unregister_chrdev_region(p2pdma_drv_ctx->base_dev, QDMA_P2PDMA_NUM_MINORS);
++
++	// Cleanup minor ID allocator
++	ida_destroy(&minors_ida);
++
++	// Free driver context
++	kfree(p2pdma_drv_ctx);
++	p2pdma_drv_ctx = NULL;
++
++	pr_info("P2P DMA driver unloaded\n");
++}
+diff --git a/QDMA/linux-kernel/driver/src/qdma_p2pdma.h b/QDMA/linux-kernel/driver/src/qdma_p2pdma.h
+new file mode 100644
+index 0000000..96a6901
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/qdma_p2pdma.h
+@@ -0,0 +1,14 @@
++#ifndef __QDMA_P2PDMA_H__
++#define __QDMA_P2PDMA_H__
++
++#include <linux/pci.h>
++
++int qdma_p2pdma_init(void);
++
++void qdma_p2pdma_exit(void);
++
++int qdma_p2pdma_probe(struct pci_dev *pdev, int bar);
++
++void qdma_p2pdma_remove(struct pci_dev *pdev);
++
++#endif /* __QDMA_P2PDMA_H__ */
+diff --git a/QDMA/linux-kernel/driver/src/qdma_persistent.c b/QDMA/linux-kernel/driver/src/qdma_persistent.c
+new file mode 100644
+index 0000000..00cb47d
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/qdma_persistent.c
+@@ -0,0 +1,775 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Persistent, dynamic GPU DMA-BUF imports for premapped MM requests.
++ *
++ * Locking: file lock protects handle ownership. dma_resv protects the map,
++ * invalidation and busy transition. Never acquire file lock under dma_resv.
++ * Hardware callbacks only publish atomic state and schedule work; all sleeping
++ * cleanup and DMA fence signaling is performed outside the descq spinlock.
++ *
++ * Lifetime: registry -> registration -> file context -> cdev/module; an accepted
++ * request additionally retains registration + SG + fence until proven complete.
++ * Timeout never cancels or frees a QDMA request. Failed/short callbacks retain
++ * everything, with an unsignaled fence, because they do not prove DMA quiescence.
++ */
++#define pr_fmt(fmt) KBUILD_MODNAME ":persistent: " fmt
++#include <linux/completion.h>
++#include <linux/dma-buf.h>
++#include <linux/dma-fence.h>
++#include <linux/dma-resv.h>
++#include <linux/kref.h>
++#include <linux/ktime.h>
++#include <linux/module.h>
++#include <linux/overflow.h>
++#include <linux/pci.h>
++#include <linux/rcupdate.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/workqueue.h>
++#include "cdev.h"
++#include "qdma_mod.h"
++#include "qdma_persistent.h"
++#include "qdma_persistent_logic.h"
++
++DEFINE_MUTEX(qdma_cdev_lifecycle_mutex);
++static struct workqueue_struct *completion_wq;
++int qdma_persistent_init(void)
++{
++    completion_wq = alloc_workqueue("qdma_persistent", WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
++    return completion_wq ? 0 : -ENOMEM;
++}
++void qdma_persistent_shutdown(void)
++{
++    /* Last module references may be released at the tail of completion work
++     * or fence-free RCU callbacks. Wait for their full return before any driver
++     * teardown can free queue state or module text. Module refs prohibit unload
++     * while requests, contexts, or unsignaled quarantine fences still exist. */
++    rcu_barrier();
++    if (completion_wq) {
++        destroy_workqueue(completion_wq);
++        completion_wq = NULL;
++    }
++}
++static atomic64_t global_open = ATOMIC64_INIT(0);
++static atomic64_t global_regs = ATOMIC64_INIT(0);
++static atomic64_t global_active = ATOMIC64_INIT(0);
++static atomic64_t global_quarantine = ATOMIC64_INIT(0);
++static atomic64_t last_handle = ATOMIC64_INIT(0);
++static LIST_HEAD(quarantined_requests);
++static DEFINE_SPINLOCK(quarantine_lock);
++static u64 allocate_handle(void)
++{
++    u64 old;
++    do {
++        old = (u64)atomic64_read(&last_handle);
++        if (old == U64_MAX)
++            return 0;
++    } while ((u64)atomic64_cmpxchg(&last_handle, old, old + 1) != old);
++    return old + 1;
++}
++static int counter_get(char *buffer, const struct kernel_param *kp)
++{
++    return scnprintf(buffer, PAGE_SIZE, "%lld\n", atomic64_read(kp->arg));
++}
++static const struct kernel_param_ops counter_ops = { .get = counter_get };
++module_param_cb(persistent_open_files, &counter_ops, &global_open, 0444);
++module_param_cb(persistent_registrations, &counter_ops, &global_regs, 0444);
++module_param_cb(persistent_active_requests, &counter_ops, &global_active, 0444);
++module_param_cb(persistent_quarantined_requests, &counter_ops, &global_quarantine, 0444);
++MODULE_INFO(persistent_abi, QDMA_PERSISTENT_BUILD_ID);
++
++struct persistent_registration {
++    struct kref refs;
++    struct list_head node;
++    struct qdma_file_ctx *ctx;
++    struct dma_buf *buf;
++    struct dma_buf_attachment *attachment;
++    struct sg_table *mapping;
++    struct pci_dev *gpu;
++    enum dma_data_direction dma_direction;
++    u32 direction;
++    u64 handle, length, generation, fence_context, sequence;
++    bool stale;
++    bool counted;
++    atomic_t busy;
++    atomic64_t mappings, invalidations, remaps, completed, quarantine;
++};
++struct persistent_fence {
++    struct dma_fence base;
++    spinlock_t lock;
++};
++struct persistent_request {
++    struct qdma_request req;
++    struct persistent_registration *reg;
++    struct persistent_fence *fence;
++    struct completion done;
++    struct work_struct complete_work;
++    struct list_head quarantine_node;
++    refcount_t refs; /* ioctl waiter and accepted hardware request */
++    atomic_t callback_seen;
++    spinlock_t state_lock;
++    bool finished, uncertain;
++    u64 start_ns, duration_ns;
++    unsigned int bytes;
++    int error;
++};
++
++static void ctx_put(struct qdma_file_ctx *ctx)
++{
++    if (!refcount_dec_and_test(&ctx->refs))
++        return;
++    atomic_dec(&ctx->xcdev->persistent_users);
++    atomic64_dec(&global_open);
++    kfree(ctx);
++    module_put(THIS_MODULE);
++}
++
++struct qdma_file_ctx *qdma_persistent_open(struct qdma_cdev *xcdev)
++{
++    struct qdma_file_ctx *ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
++    if (!ctx)
++        return ERR_PTR(-ENOMEM);
++    if (!try_module_get(THIS_MODULE)) {
++        kfree(ctx);
++        return ERR_PTR(-ENODEV);
++    }
++    ctx->xcdev = xcdev;
++    mutex_init(&ctx->lock);
++    INIT_LIST_HEAD(&ctx->registrations);
++    refcount_set(&ctx->refs, 1);
++    atomic_inc(&xcdev->persistent_users);
++    atomic64_inc(&global_open);
++    return ctx;
++}
++
++static void unmap_locked(struct persistent_registration *reg)
++{
++    dma_resv_assert_held(reg->buf->resv);
++    if (!reg->mapping)
++        return;
++    dma_buf_unmap_attachment(reg->attachment, reg->mapping, reg->dma_direction);
++    reg->mapping = NULL;
++}
++
++static void registration_release(struct kref *ref)
++{
++    struct persistent_registration *reg = container_of(ref, typeof(*reg), refs);
++    struct qdma_file_ctx *ctx = reg->ctx;
++    /* Only registry removal plus absence of outstanding requests reaches here. */
++    WARN_ON(atomic_read(&reg->busy));
++    if (reg->attachment) {
++        dma_resv_lock(reg->buf->resv, NULL);
++        unmap_locked(reg);
++        dma_resv_unlock(reg->buf->resv);
++        dma_buf_detach(reg->buf, reg->attachment);
++    }
++    if (reg->buf)
++        dma_buf_put(reg->buf);
++    if (reg->gpu)
++        pci_dev_put(reg->gpu);
++    if (reg->counted) {
++        atomic64_dec(&ctx->live);
++        atomic64_dec(&global_regs);
++    }
++    kfree(reg);
++    ctx_put(ctx);
++}
++static void registration_put(struct persistent_registration *reg)
++{
++    kref_put(&reg->refs, registration_release);
++}
++void qdma_persistent_close(struct qdma_file_ctx *ctx)
++{
++    struct persistent_registration *reg, *next;
++    LIST_HEAD(retired);
++    mutex_lock(&ctx->lock);
++    ctx->closing = true;
++    list_splice_init(&ctx->registrations, &retired);
++    mutex_unlock(&ctx->lock);
++    list_for_each_entry_safe(reg, next, &retired, node) {
++        list_del_init(&reg->node);
++        atomic64_inc(&ctx->unregistered);
++        registration_put(reg);
++    }
++    ctx_put(ctx);
++}
++static struct persistent_registration *lookup(struct qdma_file_ctx *ctx, u64 handle)
++{
++    struct persistent_registration *reg, *found = NULL;
++    mutex_lock(&ctx->lock);
++    if (!ctx->closing && handle) {
++        list_for_each_entry(reg, &ctx->registrations, node) {
++            if (reg->handle == handle) {
++                kref_get(&reg->refs);
++                found = reg;
++                break;
++            }
++        }
++    }
++    mutex_unlock(&ctx->lock);
++    return found;
++}
++
++static void move_notify(struct dma_buf_attachment *attachment)
++{
++    struct persistent_registration *reg = attachment->importer_priv;
++    dma_resv_assert_held(reg->buf->resv);
++    reg->stale = true;
++    atomic64_inc(&reg->invalidations);
++    atomic64_inc(&reg->ctx->invalidations);
++    /* Dynamic attachment mappings remain valid for pending DMA. Its published
++     * READ/WRITE fence makes the exporter wait before relocating the resource.
++     * Never wait here: the exporter already holds the reservation lock. */
++    if (!atomic_read(&reg->busy))
++        unmap_locked(reg);
++}
++static const struct dma_buf_attach_ops attach_ops = {
++    .allow_peer2peer = true,
++    .move_notify = move_notify,
++};
++static int wait_dependencies(struct persistent_registration *reg,
++                             enum dma_resv_usage usage)
++{
++    long rv = dma_resv_wait_timeout(reg->buf->resv, usage, true,
++                                    msecs_to_jiffies(10000));
++    return rv > 0 ? 0 : (rv == 0 ? -ETIMEDOUT : (int)rv);
++}
++static int verify_vram(struct persistent_registration *reg)
++{
++    struct scatterlist *sg;
++    u64 start = pci_bus_address(reg->gpu, 0);
++    u64 size = pci_resource_len(reg->gpu, 0), end, total = 0;
++    unsigned int i;
++    if (!(pci_resource_flags(reg->gpu, 0) & IORESOURCE_MEM) || !size ||
++        check_add_overflow(start, size, &end))
++        return -ENODEV;
++    for_each_sg(reg->mapping->sgl, sg, reg->mapping->nents, i) {
++        u64 addr = sg_dma_address(sg), length = sg_dma_len(sg);
++        if (!qdma_persistent_range_inside(addr, length, start, size) ||
++            check_add_overflow(total, length, &total)) {
++            pr_err("DMA-BUF is outside selected GPU BAR0; refusing non-VRAM mapping\n");
++            return -EXDEV;
++        }
++    }
++    return total >= reg->length ? 0 : -EINVAL;
++}
++static int map_locked(struct persistent_registration *reg)
++{
++    struct sg_table *sgt;
++    int rv;
++    dma_resv_assert_held(reg->buf->resv);
++    if (reg->mapping && !reg->stale)
++        return 0;
++    if (atomic_read(&reg->busy))
++        return -EBUSY;
++    unmap_locked(reg);
++    sgt = dma_buf_map_attachment(reg->attachment, reg->dma_direction);
++    if (IS_ERR(sgt))
++        return PTR_ERR(sgt);
++    reg->mapping = sgt;
++    /* Mapping itself may have triggered migration; those KERNEL fences must
++     * complete even though the lifetime KFD BOOKKEEP fences must not be waited. */
++    rv = wait_dependencies(reg, DMA_RESV_USAGE_KERNEL);
++    if (!rv)
++        rv = verify_vram(reg);
++    if (rv) {
++        unmap_locked(reg);
++        return rv;
++    }
++    if (reg->generation) {
++        atomic64_inc(&reg->remaps);
++        atomic64_inc(&reg->ctx->remaps);
++    }
++    reg->generation++;
++    reg->stale = false;
++    atomic64_inc(&reg->mappings);
++    atomic64_inc(&reg->ctx->mappings);
++    return 0;
++}
++static int queue_ready(struct qdma_cdev *xcdev, u32 direction, unsigned long *qh)
++{
++    struct qdma_q_state state;
++    char message[80];
++    int rv;
++    if (direction > 1 || !(xcdev->dir_init & (direction ? 1 : 2)))
++        return -EINVAL;
++    *qh = direction ? xcdev->h2c_qhndl : xcdev->c2h_qhndl;
++    rv = qdma_get_queue_state(xcdev->xcb->xpdev->dev_hndl, *qh,
++                              &state, message, sizeof(message));
++    if (rv)
++        return rv;
++    if (state.st || state.q_type != (direction ? Q_H2C : Q_C2H))
++        return -EOPNOTSUPP;
++    return state.qstate == Q_STATE_ONLINE ? 0 : -ENXIO;
++}
++static bool valid_header(u32 size, u32 version, u32 expected)
++{
++    return size == expected && version == QDMA_PERSISTENT_ABI_VERSION;
++}
++static bool reserved_zero(const u64 *reserved, size_t count)
++{
++    while (count--)
++        if (*reserved++)
++            return false;
++    return true;
++}
++static long register_buffer(struct qdma_file_ctx *ctx, void __user *user)
++{
++    struct qdma_persistent_register io;
++    struct persistent_registration *reg;
++    unsigned long qh;
++    u64 start = ktime_get_ns();
++    int rv;
++    if (copy_from_user(&io, user, sizeof(io)))
++        return -EFAULT;
++    if (!valid_header(io.size, io.version, sizeof(io)) ||
++        !reserved_zero(io.reserved, ARRAY_SIZE(io.reserved)) ||
++        io.handle || io.registration_ns || io.mapping_generation ||
++        io.dmabuf_fd < 0 || !io.length || io.length > U32_MAX ||
++        io.gpu_domain > U16_MAX || io.gpu_bus > U8_MAX ||
++        io.gpu_device > 31 || io.gpu_function > 7)
++        return -EINVAL;
++    if (atomic_read(&ctx->quarantined))
++        return -EIO;
++    if (atomic_read(&ctx->uncertain_waits))
++        return -EBUSY;
++    rv = queue_ready(ctx->xcdev, io.direction, &qh);
++    if (rv)
++        return rv;
++    reg = kzalloc(sizeof(*reg), GFP_KERNEL);
++    if (!reg)
++        return -ENOMEM;
++    kref_init(&reg->refs);
++    INIT_LIST_HEAD(&reg->node);
++    reg->ctx = ctx;
++    refcount_inc(&ctx->refs);
++    reg->length = io.length;
++    reg->direction = io.direction;
++    reg->dma_direction = io.direction ? DMA_TO_DEVICE : DMA_FROM_DEVICE;
++    reg->fence_context = dma_fence_context_alloc(1);
++    reg->gpu = pci_get_domain_bus_and_slot(io.gpu_domain, io.gpu_bus,
++                                          PCI_DEVFN(io.gpu_device, io.gpu_function));
++    if (!reg->gpu || reg->gpu->vendor != PCI_VENDOR_ID_ATI) {
++        rv = -ENODEV;
++        goto fail;
++    }
++    reg->buf = dma_buf_get(io.dmabuf_fd);
++    if (IS_ERR(reg->buf)) {
++        rv = PTR_ERR(reg->buf);
++        reg->buf = NULL;
++        goto fail;
++    }
++    if (io.length > reg->buf->size) {
++        rv = -EINVAL;
++        goto fail;
++    }
++    if (!dma_buf_is_dynamic(reg->buf)) {
++        rv = -EOPNOTSUPP;
++        goto fail;
++    }
++    reg->attachment = dma_buf_dynamic_attach(reg->buf,
++        &ctx->xcdev->xcb->xpdev->pdev->dev, &attach_ops, reg);
++    if (IS_ERR(reg->attachment)) {
++        rv = PTR_ERR(reg->attachment);
++        reg->attachment = NULL;
++        goto fail;
++    }
++    rv = dma_resv_lock_interruptible(reg->buf->resv, NULL);
++    if (rv)
++        goto fail;
++    rv = map_locked(reg);
++    io.mapping_generation = reg->generation;
++    dma_resv_unlock(reg->buf->resv);
++    if (rv)
++        goto fail;
++    mutex_lock(&ctx->lock);
++    if (ctx->closing) {
++        rv = -EBADF;
++        mutex_unlock(&ctx->lock);
++        goto fail;
++    }
++    reg->handle = allocate_handle();
++    if (!reg->handle) {
++        rv = -EOVERFLOW;
++        mutex_unlock(&ctx->lock);
++        goto fail;
++    }
++    io.handle = reg->handle;
++    io.registration_ns = ktime_get_ns() - start;
++    /* Keep the handle unpublished if userspace cannot receive it. */
++    if (copy_to_user(user, &io, sizeof(io))) {
++        mutex_unlock(&ctx->lock);
++        rv = -EFAULT;
++        goto fail;
++    }
++    reg->counted = true;
++    atomic64_inc(&ctx->registered);
++    atomic64_inc(&ctx->live);
++    atomic64_inc(&global_regs);
++    list_add_tail(&reg->node, &ctx->registrations);
++    mutex_unlock(&ctx->lock);
++    return 0;
++fail:
++    registration_put(reg);
++    return rv;
++}
++
++static const char *fence_driver(struct dma_fence *fence) { return "qdma-persistent"; }
++static const char *fence_timeline(struct dma_fence *fence) { return "qdma-mm"; }
++static void fence_free_rcu(struct rcu_head *head)
++{
++    struct dma_fence *base = container_of(head, struct dma_fence, rcu);
++    struct persistent_fence *fence = container_of(base, typeof(*fence), base);
++    kfree(fence);
++    module_put(THIS_MODULE);
++}
++static void fence_release(struct dma_fence *base)
++{
++    /* Preserve the module until the RCU callback runs. Shutdown's rcu_barrier
++     * then covers the callback's return after its last module_put. */
++    call_rcu(&base->rcu, fence_free_rcu);
++}
++static const struct dma_fence_ops fence_ops = {
++    .get_driver_name = fence_driver,
++    .get_timeline_name = fence_timeline,
++    .release = fence_release,
++};
++static struct persistent_fence *new_fence(struct persistent_registration *reg)
++{
++    struct persistent_fence *fence = kzalloc(sizeof(*fence), GFP_KERNEL);
++    if (!fence)
++        return NULL;
++    if (!try_module_get(THIS_MODULE)) {
++        kfree(fence);
++        return NULL;
++    }
++    spin_lock_init(&fence->lock);
++    dma_fence_init(&fence->base, &fence_ops, &fence->lock,
++                   reg->fence_context, ++reg->sequence);
++    return fence;
++}
++static void request_put(struct persistent_request *request)
++{
++    if (!refcount_dec_and_test(&request->refs))
++        return;
++    dma_fence_put(&request->fence->base);
++    kfree(request->req.sgl);
++    registration_put(request->reg);
++    kfree(request);
++}
++static void complete_work(struct work_struct *work)
++{
++    struct persistent_request *request = container_of(work, typeof(*request), complete_work);
++    struct persistent_registration *reg = request->reg;
++    unsigned long flags;
++    /* Only full, successful hardware callbacks schedule this worker. */
++    dma_fence_signal(&request->fence->base);
++    dma_resv_lock(reg->buf->resv, NULL);
++    atomic_set(&reg->busy, 0);
++    if (reg->stale)
++        unmap_locked(reg);
++    atomic64_dec(&reg->ctx->active);
++    atomic64_dec(&global_active);
++    atomic64_inc(&reg->completed);
++    atomic64_inc(&reg->ctx->completed);
++    dma_resv_unlock(reg->buf->resv);
++    spin_lock_irqsave(&request->state_lock, flags);
++    request->finished = true;
++    if (request->uncertain)
++        atomic_dec(&reg->ctx->uncertain_waits);
++    spin_unlock_irqrestore(&request->state_lock, flags);
++    complete_all(&request->done);
++    request_put(request); /* hardware reference */
++}
++static int request_done(struct qdma_request *req, unsigned int bytes, int error)
++{
++    struct persistent_request *request = container_of(req, typeof(*request), req);
++    struct persistent_registration *reg = request->reg;
++    if (atomic_cmpxchg(&request->callback_seen, 0, 1))
++        return 0;
++    request->duration_ns = ktime_get_ns() - request->start_ns;
++    request->bytes = bytes;
++    request->error = qdma_persistent_full_completion(req->count, bytes, error) ?
++                     0 : (error ? error : -EIO);
++    if (request->error) {
++        unsigned long flags;
++        /* A queue-stop/error callback is not a hardware quiescence proof. */
++        spin_lock_irqsave(&quarantine_lock, flags);
++        list_add_tail(&request->quarantine_node, &quarantined_requests);
++        spin_unlock_irqrestore(&quarantine_lock, flags);
++        atomic_set(&reg->ctx->quarantined, 1);
++        atomic64_inc(&reg->quarantine);
++        atomic64_inc(&reg->ctx->quarantine);
++        atomic64_inc(&global_quarantine);
++        pr_err("quarantined handle %llu: completion error %d, bytes %u/%u; resources retained\n",
++               reg->handle, request->error, bytes, req->count);
++        complete_all(&request->done);
++        return 0;
++    }
++    queue_work(completion_wq, &request->complete_work);
++    return 0;
++}
++static int exact_sgl(struct persistent_registration *reg,
++                      struct qdma_request *req, u32 length)
++{
++    struct scatterlist *sg;
++    struct qdma_persistent_sg_cursor cursor = { .remaining = length };
++    u32 used = 0;
++    unsigned int i;
++    req->sgl = kcalloc(reg->mapping->nents, sizeof(*req->sgl), GFP_KERNEL);
++    if (!req->sgl)
++        return -ENOMEM;
++    for_each_sg(reg->mapping->sgl, sg, reg->mapping->nents, i) {
++        struct qdma_sw_sg *out;
++        u32 bytes;
++        if (!cursor.remaining)
++            break;
++        bytes = qdma_persistent_take_segment(&cursor, sg_dma_len(sg));
++        if (!bytes)
++            continue;
++        out = &req->sgl[used++];
++        out->dma_addr = sg_dma_address(sg);
++        out->len = bytes;
++        /* Peer resources need not have struct pages. Premapped MM uses only
++         * dma_addr/len; pg and offset intentionally remain zero. */
++        if (used > 1)
++            req->sgl[used - 2].next = out;
++    }
++    if (cursor.remaining || !used || used >= 65536) {
++        kfree(req->sgl);
++        req->sgl = NULL;
++        return -EINVAL;
++    }
++    req->sgcnt = used;
++    return 0;
++}
++static long transfer_buffer(struct qdma_file_ctx *ctx, void __user *user)
++{
++    struct qdma_persistent_transfer io;
++    struct persistent_registration *reg;
++    struct persistent_request *request = NULL;
++    unsigned long qh;
++    u64 end;
++    long rv;
++    bool fence_published = false;
++    if (copy_from_user(&io, user, sizeof(io)))
++        return -EFAULT;
++    if (!valid_header(io.size, io.version, sizeof(io)) ||
++        !reserved_zero(io.reserved, ARRAY_SIZE(io.reserved)) ||
++        io.bytes_transferred || io.transfer_duration_ns || io.mapping_generation ||
++        !io.length || io.length > U32_MAX ||
++        check_add_overflow(io.device_address, io.length, &end))
++        return -EINVAL;
++    if (atomic_read(&ctx->quarantined))
++        return -EIO;
++    if (atomic_read(&ctx->uncertain_waits))
++        return -EBUSY;
++    reg = lookup(ctx, io.handle);
++    if (!reg)
++        return -ENOENT;
++    if (io.length > reg->length) {
++        rv = -EINVAL;
++        goto put_reg;
++    }
++    rv = queue_ready(ctx->xcdev, reg->direction, &qh);
++    if (rv)
++        goto put_reg;
++    request = kzalloc(sizeof(*request), GFP_KERNEL);
++    if (!request) {
++        rv = -ENOMEM;
++        goto put_reg;
++    }
++    request->reg = reg;
++    refcount_set(&request->refs, 1);
++    init_completion(&request->done);
++    INIT_LIST_HEAD(&request->quarantine_node);
++    INIT_WORK(&request->complete_work, complete_work);
++    spin_lock_init(&request->state_lock);
++    rv = dma_resv_lock_interruptible(reg->buf->resv, NULL);
++    if (rv)
++        goto free_request;
++    if (atomic_read(&reg->busy)) {
++        rv = -EBUSY;
++        goto unlock;
++    }
++    /* C2H writes GPU memory, so wait all previous readers and writers; H2C
++     * reads it, so wait previous writers. Both include KERNEL migration. */
++    rv = wait_dependencies(reg, reg->direction ? DMA_RESV_USAGE_WRITE : DMA_RESV_USAGE_READ);
++    if (rv)
++        goto unlock;
++    rv = map_locked(reg);
++    if (rv)
++        goto unlock;
++    rv = exact_sgl(reg, &request->req, (u32)io.length);
++    if (rv)
++        goto unlock;
++    request->fence = new_fence(reg);
++    if (!request->fence) {
++        rv = -ENOMEM;
++        goto unlock;
++    }
++    rv = dma_resv_reserve_fences(reg->buf->resv, 1);
++    if (rv)
++        goto unlock;
++    request->req.count = io.length;
++    request->req.ep_addr = io.device_address;
++    request->req.write = reg->direction;
++    request->req.dma_mapped = 1;
++    request->req.h2c_eot = 1;
++    request->req.timeout_ms = 0; /* own wait never removes native request */
++    request->req.fp_done = request_done;
++    io.mapping_generation = reg->generation;
++    atomic_set(&reg->busy, 1);
++    atomic64_inc(&ctx->active);
++    atomic64_inc(&global_active);
++    dma_resv_add_fence(reg->buf->resv, &request->fence->base,
++                       reg->direction ? DMA_RESV_USAGE_READ : DMA_RESV_USAGE_WRITE);
++    fence_published = true;
++    refcount_inc(&request->refs); /* hardware owns accepted request */
++    request->start_ns = ktime_get_ns();
++    rv = ctx->xcdev->fp_rw(ctx->xcdev->xcb->xpdev->dev_hndl, qh, &request->req);
++    /* In premapped MM mode qdma_request_submit returns <0 only before
++     * qdma_work_queue_add. After enqueue it returns zero even if descriptor
++     * processing fails. Therefore only negative return proves not submitted. */
++    if (rv < 0) {
++        atomic_set(&reg->busy, 0);
++        atomic64_dec(&ctx->active);
++        atomic64_dec(&global_active);
++        dma_fence_set_error(&request->fence->base, rv);
++        dma_fence_signal(&request->fence->base);
++        refcount_dec(&request->refs);
++    }
++    dma_resv_unlock(reg->buf->resv);
++    if (rv < 0)
++        goto put_request;
++    rv = wait_for_completion_interruptible_timeout(&request->done, msecs_to_jiffies(10000));
++    if (rv <= 0) {
++        unsigned long flags;
++        spin_lock_irqsave(&request->state_lock, flags);
++        if (!request->finished) {
++            request->uncertain = true;
++            atomic_inc(&ctx->uncertain_waits);
++        }
++        spin_unlock_irqrestore(&request->state_lock, flags);
++        rv = rv ? rv : -ETIMEDOUT;
++        pr_warn("wait ended %ld for handle %llu; native request and mapping retained until hardware completion\n",
++                 rv, reg->handle);
++        goto put_request;
++    }
++    rv = request->error;
++    if (!rv) {
++        flush_work(&request->complete_work);
++        io.bytes_transferred = request->bytes;
++        io.transfer_duration_ns = request->duration_ns;
++        if (copy_to_user(user, &io, sizeof(io)))
++            rv = -EFAULT;
++    }
++put_request:
++    request_put(request);
++    return rv;
++unlock:
++    dma_resv_unlock(reg->buf->resv);
++free_request:
++    WARN_ON(fence_published);
++    if (request->fence)
++        dma_fence_put(&request->fence->base);
++    kfree(request->req.sgl);
++    kfree(request);
++put_reg:
++    registration_put(reg);
++    return rv;
++}
++static long unregister_buffer(struct qdma_file_ctx *ctx, void __user *user)
++{
++    struct qdma_persistent_unregister io;
++    struct persistent_registration *reg, *found = NULL;
++    int rv = -ENOENT;
++    if (copy_from_user(&io, user, sizeof(io)))
++        return -EFAULT;
++    if (!valid_header(io.size, io.version, sizeof(io)) ||
++        !reserved_zero(io.reserved, ARRAY_SIZE(io.reserved)))
++        return -EINVAL;
++    mutex_lock(&ctx->lock);
++    list_for_each_entry(reg, &ctx->registrations, node) {
++        if (reg->handle != io.handle)
++            continue;
++        /* A lookup may already own a ref before setting busy. Refcount==1
++         * proves there are no in-flight transfer/stat/lookups at this point. */
++        if (atomic_read(&reg->busy) || kref_read(&reg->refs) != 1) {
++            rv = -EBUSY;
++            break;
++        }
++        list_del_init(&reg->node);
++        found = reg;
++        atomic64_inc(&ctx->unregistered);
++        rv = 0;
++        break;
++    }
++    mutex_unlock(&ctx->lock);
++    if (found)
++        registration_put(found);
++    return rv;
++}
++static long read_stats(struct qdma_file_ctx *ctx, void __user *user)
++{
++    struct qdma_persistent_stats io;
++    struct persistent_registration *reg = NULL;
++    if (copy_from_user(&io, user, sizeof(io)))
++        return -EFAULT;
++    if (!valid_header(io.size, io.version, sizeof(io)) ||
++        !reserved_zero(io.reserved, ARRAY_SIZE(io.reserved)))
++        return -EINVAL;
++    if (io.handle) {
++        reg = lookup(ctx, io.handle);
++        if (!reg)
++            return -ENOENT;
++        io.registrations = 1;
++        io.unregistrations = 0;
++        io.live_registrations = 1;
++        io.mappings = atomic64_read(&reg->mappings);
++        io.invalidations = atomic64_read(&reg->invalidations);
++        io.remaps = atomic64_read(&reg->remaps);
++        io.active_requests = atomic_read(&reg->busy);
++        io.completed_requests = atomic64_read(&reg->completed);
++        io.quarantined_requests = atomic64_read(&reg->quarantine);
++        io.mapping_generation = READ_ONCE(reg->generation);
++        registration_put(reg);
++    } else {
++        io.registrations = atomic64_read(&ctx->registered);
++        io.unregistrations = atomic64_read(&ctx->unregistered);
++        io.live_registrations = atomic64_read(&ctx->live);
++        io.mappings = atomic64_read(&ctx->mappings);
++        io.invalidations = atomic64_read(&ctx->invalidations);
++        io.remaps = atomic64_read(&ctx->remaps);
++        io.active_requests = atomic64_read(&ctx->active);
++        io.completed_requests = atomic64_read(&ctx->completed);
++        io.quarantined_requests = atomic64_read(&ctx->quarantine);
++        io.mapping_generation = 0;
++    }
++    return copy_to_user(user, &io, sizeof(io)) ? -EFAULT : 0;
++}
++long qdma_persistent_ioctl(struct qdma_file_ctx *ctx, unsigned int cmd, unsigned long arg)
++{
++    void __user *user = (void __user *)arg;
++    if (cmd == QDMA_CDEV_IOCTL_CAPS) {
++        struct qdma_persistent_caps io;
++        if (copy_from_user(&io, user, sizeof(io)))
++            return -EFAULT;
++        if (!valid_header(io.size, io.version, sizeof(io)) ||
++            !reserved_zero(io.reserved, ARRAY_SIZE(io.reserved)))
++            return -EINVAL;
++        memset(&io, 0, sizeof(io));
++        io.size = sizeof(io);
++        io.version = QDMA_PERSISTENT_ABI_VERSION;
++        io.features = QDMA_PERSISTENT_FEATURES;
++        io.max_transfer_bytes = U32_MAX;
++        strscpy(io.build_id, QDMA_PERSISTENT_BUILD_ID, sizeof(io.build_id));
++        return copy_to_user(user, &io, sizeof(io)) ? -EFAULT : 0;
++    }
++    switch (cmd) {
++    case QDMA_CDEV_IOCTL_REGISTER: return register_buffer(ctx, user);
++    case QDMA_CDEV_IOCTL_TRANSFER_REGISTERED: return transfer_buffer(ctx, user);
++    case QDMA_CDEV_IOCTL_UNREGISTER: return unregister_buffer(ctx, user);
++    case QDMA_CDEV_IOCTL_STATS: return read_stats(ctx, user);
++    default: return -ENOTTY;
++    }
++}
+diff --git a/QDMA/linux-kernel/driver/src/qdma_persistent.h b/QDMA/linux-kernel/driver/src/qdma_persistent.h
+new file mode 100644
+index 0000000..ea0b4b2
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/qdma_persistent.h
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef QDMA_PERSISTENT_H
++#define QDMA_PERSISTENT_H
++#include <linux/list.h>
++#include <linux/refcount.h>
++#include <linux/mutex.h>
++#include <linux/atomic.h>
++#include "qdma_persistent_uapi.h"
++struct qdma_cdev;
++struct qdma_file_ctx {
++    struct qdma_cdev *xcdev;
++    struct mutex lock;
++    struct list_head registrations;
++    refcount_t refs;
++    bool closing;
++    atomic_t quarantined;
++    atomic_t uncertain_waits;
++    atomic64_t registered, unregistered, live, mappings, invalidations;
++    atomic64_t remaps, active, completed, quarantine;
++};
++/* Serializes open against ordinary queue stop/delete. */
++extern struct mutex qdma_cdev_lifecycle_mutex;
++int qdma_persistent_init(void);
++void qdma_persistent_shutdown(void);
++struct qdma_file_ctx *qdma_persistent_open(struct qdma_cdev *xcdev);
++void qdma_persistent_close(struct qdma_file_ctx *ctx);
++long qdma_persistent_ioctl(struct qdma_file_ctx *ctx, unsigned int cmd,
++                           unsigned long arg);
++#endif
+diff --git a/QDMA/linux-kernel/driver/src/qdma_persistent_logic.h b/QDMA/linux-kernel/driver/src/qdma_persistent_logic.h
+new file mode 100644
+index 0000000..dd472c8
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/qdma_persistent_logic.h
+@@ -0,0 +1,43 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/* Small hardware-independent predicates shared with the device-free tests. */
++#ifndef QDMA_PERSISTENT_LOGIC_H
++#define QDMA_PERSISTENT_LOGIC_H
++#ifdef __KERNEL__
++#include <linux/types.h>
++typedef u64 qdma_logic_u64;
++typedef u32 qdma_logic_u32;
++#else
++#include <stdbool.h>
++#include <stdint.h>
++typedef uint64_t qdma_logic_u64;
++typedef uint32_t qdma_logic_u32;
++#endif
++static inline bool qdma_persistent_range_inside(qdma_logic_u64 address,
++    qdma_logic_u64 length, qdma_logic_u64 aperture_start, qdma_logic_u64 aperture_length)
++{
++    qdma_logic_u64 maximum = ~(qdma_logic_u64)0;
++    if (!length || !aperture_length || aperture_start > maximum - aperture_length ||
++        address < aperture_start || address > maximum - length)
++        return false;
++    return address + length <= aperture_start + aperture_length;
++}
++struct qdma_persistent_sg_cursor {
++    qdma_logic_u32 remaining;
++    qdma_logic_u32 entries;
++};
++static inline qdma_logic_u32 qdma_persistent_take_segment(
++    struct qdma_persistent_sg_cursor *cursor, qdma_logic_u32 available)
++{
++    qdma_logic_u32 used = available < cursor->remaining ? available : cursor->remaining;
++    if (used) {
++        cursor->remaining -= used;
++        cursor->entries++;
++    }
++    return used;
++}
++static inline bool qdma_persistent_full_completion(qdma_logic_u32 requested,
++    qdma_logic_u32 completed, int error)
++{
++    return requested && !error && requested == completed;
++}
++#endif
+diff --git a/QDMA/linux-kernel/driver/tests/persistent_lifetime_model.py b/QDMA/linux-kernel/driver/tests/persistent_lifetime_model.py
+new file mode 100644
+index 0000000..02dcdb3
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/tests/persistent_lifetime_model.py
+@@ -0,0 +1,250 @@
++#!/usr/bin/env python3
++"""Device-free contract model for exceptional lifetime interleavings.
++
++These tests validate the intended ownership/state contract, not live kernel
++locking or DMA behavior. persistent_logic_test.c tests the actual shared C
++predicates. Hardware integration must additionally verify SG placement and
++completion/cleanup counters; no real DMA fault injection belongs in this test.
++"""
++import itertools
++import unittest
++
++
++class File:
++    identifiers = itertools.count(1)
++
++    def __init__(self):
++        self.handles = {}
++        self.registrations = []
++        self.fds = 1
++        self.closed = False
++        self.uncertain = 0
++        self.quarantine = False
++
++    def register(self, backing, fd):
++        reg = Registration(self, backing, fd, next(self.identifiers))
++        self.handles[reg.handle] = reg
++        self.registrations.append(reg)
++        return reg
++
++    def lookup(self, handle):
++        return self.handles[handle]
++
++    def duplicate(self):
++        self.fds += 1
++        return self
++
++    def unregister(self, handle):
++        reg = self.lookup(handle)
++        if reg.active:
++            raise BlockingIOError()
++        del self.handles[handle]
++        reg.retired = True
++        reg.cleanup()
++
++    def close(self):
++        self.fds -= 1
++        if self.fds:
++            return
++        self.closed = True
++        for reg in list(self.handles.values()):
++            reg.retired = True
++            reg.cleanup()
++        self.handles.clear()
++
++    def stop_allowed(self):
++        return self.closed and all(r.destroyed for r in self.registrations)
++
++
++class Registration:
++    def __init__(self, owner, backing, fd, handle):
++        self.owner, self.backing, self.fd, self.handle = owner, backing, fd, handle
++        self.mapping = True
++        self.generation = 1
++        self.active = False
++        self.retired = False
++        self.destroyed = False
++        self.stale = False
++        self.fence_signaled = False
++        self.wait_uncertain = False
++        self.callback_error = False
++
++    def start(self, length=4096):
++        if self.retired or self.active or self.owner.quarantine or self.owner.uncertain:
++            raise BlockingIOError()
++        if not 0 < length <= 8192:
++            raise ValueError()
++        if not self.mapping:
++            self.mapping = True
++            self.generation += 1
++        self.stale = False
++        self.active = True
++        self.fence_signaled = False
++        self.length = length
++
++    def move(self):
++        self.stale = True
++        if not self.active:
++            self.mapping = False
++
++    def wait_ends(self):
++        if self.active and not self.wait_uncertain:
++            self.wait_uncertain = True
++            self.owner.uncertain += 1
++
++    def complete(self, count=None, error=0):
++        count = self.length if count is None else count
++        if self.callback_error:
++            return  # a failed callback is not converted into a fabricated success
++        if error or count != self.length:
++            self.callback_error = True
++            self.owner.quarantine = True
++            return
++        self.fence_signaled = True
++        self.active = False
++        if self.wait_uncertain:
++            self.owner.uncertain -= 1
++            self.wait_uncertain = False
++        if self.stale:
++            self.mapping = False
++        self.cleanup()
++
++    def cleanup(self):
++        if self.retired and not self.active:
++            self.mapping = False
++            self.destroyed = True
++
++
++class LifetimeTests(unittest.TestCase):
++    def test_fd_reuse_and_foreign_handles(self):
++        a, b = File(), File()
++        original = object()
++        ar = a.register(original, 8)
++        br = b.register(object(), 8)
++        self.assertIs(ar.backing, original)
++        self.assertNotEqual(ar.handle, br.handle)
++        with self.assertRaises(KeyError):
++            b.lookup(ar.handle)
++        a.unregister(ar.handle)
++        ar2 = a.register(object(), 8)
++        self.assertGreater(ar2.handle, ar.handle)
++        with self.assertRaises(KeyError):
++            a.lookup(ar.handle)
++
++    def test_dup_shares_open_description(self):
++        a = File()
++        r = a.register(object(), 4)
++        duplicate = a.duplicate()
++        a.close()
++        self.assertIs(duplicate.lookup(r.handle), r)
++        self.assertFalse(a.closed)
++        duplicate.close()
++        self.assertTrue(r.destroyed)
++        self.assertTrue(a.stop_allowed())
++
++    def test_registration_failure_unwinds_previous_registrations(self):
++        a = File()
++        registered = [a.register(object(), fd) for fd in range(4)]
++        # Fifth register fails before publication: callers unwind existing IDs.
++        for reg in reversed(registered):
++            a.unregister(reg.handle)
++        self.assertFalse(a.handles)
++        self.assertTrue(all(r.destroyed for r in registered))
++        a.close()
++        self.assertTrue(a.stop_allowed())
++
++    def test_timeout_and_signal_retain_until_late_success(self):
++        for event in ('timeout', 'signal'):
++            with self.subTest(event=event):
++                a = File()
++                r = a.register(object(), 4)
++                other = a.register(object(), 5)
++                r.start()
++                r.wait_ends()
++                self.assertTrue(r.mapping and r.active)
++                self.assertFalse(r.fence_signaled)
++                with self.assertRaises(BlockingIOError):
++                    other.start()
++                with self.assertRaises(BlockingIOError):
++                    a.unregister(r.handle)
++                r.complete()
++                self.assertTrue(r.fence_signaled)
++                self.assertEqual(a.uncertain, 0)
++                other.start()
++                other.complete()
++                a.close()
++                self.assertTrue(a.stop_allowed())
++
++    def test_close_during_dma_and_move(self):
++        a = File()
++        r = a.register(object(), 4)
++        r.start()
++        a.close()
++        self.assertTrue(r.retired and r.active and r.mapping)
++        self.assertFalse(a.stop_allowed())
++        r.move()
++        self.assertTrue(r.mapping)  # exporter waits published unsignaled fence
++        r.complete()
++        self.assertTrue(r.fence_signaled and r.destroyed)
++        self.assertTrue(a.stop_allowed())
++
++    def test_move_without_dma_and_remap(self):
++        a = File()
++        r = a.register(object(), 4)
++        r.move()
++        self.assertFalse(r.mapping)
++        r.start(1)
++        self.assertEqual(r.generation, 2)
++        r.complete()
++        r.start(8192)
++        r.complete()
++        self.assertEqual(r.generation, 2)  # stable reuse never remaps
++        a.close()
++
++    def test_uncertain_error_never_signals_or_unmaps(self):
++        for count, error in ((0, -6), (1024, 0), (4096, -5)):
++            with self.subTest(count=count, error=error):
++                a = File()
++                r = a.register(object(), 4)
++                r.start()
++                r.complete(count, error)
++                a.close()
++                r.move()
++                self.assertTrue(a.quarantine and r.mapping and r.active)
++                self.assertFalse(r.fence_signaled or r.destroyed or a.stop_allowed())
++
++    def test_independent_queues_and_variable_transfer_length(self):
++        queues = [File() for _ in range(12)]
++        regs = [q.register(object(), 10) for q in queues]
++        for i, r in enumerate(regs):
++            r.start(i + 1)
++        for r in reversed(regs):
++            r.complete()
++        for q in queues:
++            q.close()
++        self.assertTrue(all(q.stop_allowed() for q in queues))
++        for length in (0, -1, 8193):
++            q = File()
++            r = q.register(object(), 1)
++            with self.assertRaises(ValueError):
++                r.start(length)
++            q.close()
++
++    def test_completion_timeout_race_both_orders(self):
++        for order in ('completion-first', 'timeout-first'):
++            a = File()
++            r = a.register(object(), 4)
++            r.start()
++            if order == 'completion-first':
++                r.complete()
++                r.wait_ends()
++            else:
++                r.wait_ends()
++                r.complete()
++            self.assertEqual(a.uncertain, 0)
++            a.close()
++            self.assertTrue(a.stop_allowed())
++
++
++if __name__ == '__main__':
++    unittest.main(verbosity=2)
+diff --git a/QDMA/linux-kernel/driver/tests/persistent_logic_test.c b/QDMA/linux-kernel/driver/tests/persistent_logic_test.c
+new file mode 100644
+index 0000000..05eb5e9
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/tests/persistent_logic_test.c
+@@ -0,0 +1,72 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#include <assert.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <stdint.h>
++#include "qdma_persistent_uapi.h"
++#include "qdma_persistent_logic.h"
++_Static_assert(sizeof(struct qdma_persistent_caps) == 120, "caps ABI");
++_Static_assert(sizeof(struct qdma_persistent_register) == 96, "register ABI");
++_Static_assert(sizeof(struct qdma_persistent_transfer) == 88, "transfer ABI");
++_Static_assert(sizeof(struct qdma_persistent_unregister) == 48, "unregister ABI");
++_Static_assert(sizeof(struct qdma_persistent_stats) == 128, "stats ABI");
++_Static_assert(offsetof(struct qdma_persistent_register, handle) == 40, "handle ABI");
++_Static_assert(offsetof(struct qdma_persistent_transfer, bytes_transferred) == 32, "response ABI");
++_Static_assert(_IOC_NR(QDMA_CDEV_IOCTL_CAPS) == 4, "caps ioctl");
++_Static_assert(_IOC_NR(QDMA_CDEV_IOCTL_REGISTER) == 5, "register ioctl");
++_Static_assert(_IOC_NR(QDMA_CDEV_IOCTL_TRANSFER_REGISTERED) == 6, "transfer ioctl");
++_Static_assert(_IOC_NR(QDMA_CDEV_IOCTL_UNREGISTER) == 7, "unregister ioctl");
++_Static_assert(_IOC_NR(QDMA_CDEV_IOCTL_STATS) == 8, "stats ioctl");
++_Static_assert(_IOC_SIZE(QDMA_CDEV_IOCTL_TRANSFER_REGISTERED) == 88, "encoded ABI");
++static void ranges(void)
++{
++    assert(qdma_persistent_range_inside(0x1000, 0x100, 0x1000, 0x1000));
++    assert(qdma_persistent_range_inside(0x1fff, 1, 0x1000, 0x1000));
++    assert(!qdma_persistent_range_inside(0x1fff, 2, 0x1000, 0x1000));
++    assert(!qdma_persistent_range_inside(0xfff, 1, 0x1000, 0x1000));
++    assert(!qdma_persistent_range_inside(UINT64_MAX-1, 4, 0, UINT64_MAX));
++    assert(!qdma_persistent_range_inside(UINT64_MAX-1, 1, UINT64_MAX-1, 4));
++    assert(!qdma_persistent_range_inside(0x1000, 0, 0x1000, 0x1000));
++    assert(!qdma_persistent_range_inside(0x1000, 1, 0x1000, 0));
++}
++static void scatterlists(void)
++{
++    struct qdma_persistent_sg_cursor cursor = { .remaining = 4097 };
++    assert(qdma_persistent_take_segment(&cursor, 4096) == 4096);
++    assert(qdma_persistent_take_segment(&cursor, 4096) == 1);
++    assert(qdma_persistent_take_segment(&cursor, 4096) == 0);
++    assert(cursor.entries == 2 && cursor.remaining == 0);
++    cursor.remaining = 8193; cursor.entries = 0;
++    assert(qdma_persistent_take_segment(&cursor, 0) == 0);
++    assert(qdma_persistent_take_segment(&cursor, 4096) == 4096);
++    assert(qdma_persistent_take_segment(&cursor, 4096) == 4096);
++    assert(cursor.remaining == 1 && cursor.entries == 2); /* insufficient map */
++    for (uint32_t target = 1; target < 100000; target += 113) {
++        uint64_t sum = 0;
++        cursor.remaining = target; cursor.entries = 0;
++        for (uint32_t n = 0; n < 1000 && cursor.remaining; ++n) {
++            uint32_t available = (n * 127 + target * 17) % 4097;
++            uint32_t before = cursor.remaining;
++            uint32_t used = qdma_persistent_take_segment(&cursor, available);
++            assert(used <= available && used <= before);
++            sum += used;
++        }
++        assert(!cursor.remaining && sum == target);
++        assert(qdma_persistent_take_segment(&cursor, UINT32_MAX) == 0);
++    }
++}
++static void completions(void)
++{
++    assert(qdma_persistent_full_completion(4096, 4096, 0));
++    assert(!qdma_persistent_full_completion(4096, 4095, 0));
++    assert(!qdma_persistent_full_completion(4096, 0, -6)); /* queue stop */
++    assert(!qdma_persistent_full_completion(4096, 4096, -5));
++    assert(!qdma_persistent_full_completion(4096, 4097, 0));
++    assert(!qdma_persistent_full_completion(0, 0, 0));
++}
++int main(void)
++{
++    ranges(); scatterlists(); completions();
++    puts("PASS: fixed-width ABI, ioctl numbers, GPU aperture bounds, exact SG accounting, completion proof");
++    return 0;
++}

@@ -1,0 +1,11 @@
+# Downloaded / generated inputs (prepare_data.py)
+/data/
+/fpga_graph_input/
+
+# Build output
+/build/
+__pycache__/
+*.pyc
+
+# Reports written with --output
+/*.json

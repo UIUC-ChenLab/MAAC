@@ -1,0 +1,26 @@
+License of qdma_p2p_dmabuf.patch
+
+qdma_p2p_dmabuf.patch is a modification of the Xilinx DMA IP Core driver for
+Linux (QDMA), https://github.com/Xilinx/dma_ip_drivers, commit
+0ff1e9d3ad0179fdaa246a105deade131e2b951b. The driver source files it changes
+carry this notice:
+
+  This file is part of the Xilinx DMA IP Core driver for Linux
+
+  Copyright (c) 2017-2022, Xilinx, Inc. All rights reserved.
+  Copyright (c) 2022-2024, Advanced Micro Devices, Inc. All rights reserved.
+
+  This source code is free software; you can redistribute it and/or modify it
+  under the terms and conditions of the GNU General Public License,
+  version 2, as published by the Free Software Foundation.
+
+  This program is distributed in the hope that it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+  more details.
+
+The patch, including the files it adds to the driver, is distributed under the
+same terms: the GNU General Public License, version 2. The full text of the
+license is in the file "COPYING" in this folder.
+
+This license applies to the contents of this folder only.
